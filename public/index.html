@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Comic30 | AI Game Creation Portal</title>
+    <meta name="description" content="Comic30 helps creators design story worlds, characters, game economies, and mobile game project kits for iOS and Android.">
+    <link rel="icon" type="image/png" href="/assets/brand/comic30-icon.png">
+    <link rel="apple-touch-icon" href="/assets/brand/comic30-icon.png">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <canvas class="neural-canvas" id="neural-canvas" aria-hidden="true"></canvas>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Comic30 home">
+        <img class="brand-mark" src="/assets/brand/comic30-icon.png" alt="" aria-hidden="true">
+        <span class="brand-copy">
+          <strong>Comic30</strong>
+          <small>AI Game Creation Engine</small>
+        </span>
+      </a>
+      <nav class="topnav" aria-label="Primary navigation">
+        <button class="ghost-button" type="button" data-scroll-target="experience">Experience</button>
+        <button class="ghost-button" type="button" data-scroll-target="engine">AI Stack</button>
+        <button class="ghost-button" type="button" data-scroll-target="studio">Studio</button>
+      </nav>
+      <div class="account-actions" id="account-actions"></div>
+    </header>
+
+    <main id="app" aria-live="polite"></main>
+
+    <footer class="site-footer">
+      <span>Comic30 creator portal</span>
+      <span>Story worlds, mobile exports, wallet economies, and live operations.</span>
+    </footer>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/assets/vendor/model-viewer.min.js"></script>
+    <script src="/js/app.js" defer></script>
+  </body>
+</html>

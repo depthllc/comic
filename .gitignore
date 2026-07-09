@@ -1,0 +1,5 @@
+data/db.json
+exports/*.zip
+node_modules/
+.env
+.DS_Store
