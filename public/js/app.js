@@ -483,6 +483,19 @@
         </div>
       </section>
 
+      <section class="logo-ticker-section" aria-label="Comic30 partner ecosystem">
+        <div class="logo-ticker-track">
+          ${[0, 1, 2, 3].map(() => `
+            <div class="logo-ticker-set">
+              <img src="/assets/partners/nvidia-inception-white.png" alt="NVIDIA Inception Program">
+              <img src="/assets/partners/fuelarts-white.png" alt="Fuelarts">
+              <img src="/assets/partners/tech-logo-white.png" alt="TC">
+              <img src="/assets/partners/tezos-white.png" alt="Tezos">
+            </div>
+          `).join("")}
+        </div>
+      </section>
+
       <section class="parallax-scene scene-export" data-parallax-scene>
         <video class="scene-video" muted loop playsinline preload="metadata">
           <source src="/assets/videos/user/space-game-launch.mp4" type="video/mp4">
