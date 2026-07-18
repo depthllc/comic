@@ -1622,7 +1622,7 @@ async function handleApi(req, res, url) {
     const bucketResponse = await fetch(`${SUPABASE_URL}/storage/v1/bucket/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}`, {
       headers: serviceHeaders
     });
-    if (bucketResponse.status === 404) {
+    if (!bucketResponse.ok) {
       const createResponse = await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
         method: "POST",
         headers: serviceHeaders,
