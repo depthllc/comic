@@ -6,7 +6,10 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "check": "node --check server.js && node --check api/index.js && node --check public/js/app.js && node --check tools/import-consented-contacts.js",
+    "contacts:preview": "node tools/import-consented-contacts.js --source",
+    "contacts:commit": "node tools/import-consented-contacts.js --commit --source"
   },
   "engines": {
     "node": ">=20"

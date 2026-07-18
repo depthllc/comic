@@ -9,7 +9,8 @@
     draft: null,
     previewArc: 0,
     previewResult: "",
-    engineMode: "world"
+    engineMode: "world",
+    csrfToken: null
   };
 
   const app = document.getElementById("app");
@@ -223,11 +224,18 @@
   }
 
   async function api(path, options) {
+    const method = String((options && options.method) || "GET").toUpperCase();
     const config = {
       credentials: "same-origin",
       headers: { "content-type": "application/json" },
       ...options
     };
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+      config.headers = {
+        ...config.headers,
+        "x-csrf-token": await csrfToken()
+      };
+    }
     if (config.body && typeof config.body !== "string") {
       config.body = JSON.stringify(config.body);
     }
@@ -238,6 +246,14 @@
       throw new Error(data && data.error ? data.error : "Request failed.");
     }
     return data;
+  }
+
+  async function csrfToken() {
+    if (state.csrfToken) return state.csrfToken;
+    const response = await fetch("/api/security/csrf", { credentials: "same-origin" });
+    const data = await response.json();
+    state.csrfToken = data.csrfToken;
+    return state.csrfToken;
   }
 
   function formData(form) {
@@ -297,6 +313,7 @@
     }
     app.innerHTML = renderPortal();
     activateMotion();
+    initGameplayPreviews();
   }
 
   function renderAccountActions() {
@@ -640,49 +657,234 @@
     `;
   }
 
+  function xgpFunctionalWorkspace(view, project) {
+    const steps = [
+      ["Story", "story", `${project.story?.length || 0} arcs`], ["Scenes", "scene", `${project.scenes?.length || 0} playable scenes`],
+      ["Levels", "level", `${project.levels?.length || 0} levels`], ["Characters", "character", `${project.characters?.length || 0} cast`],
+      ["Gameplay", "gameplay", `${project.gameplay?.mechanics?.length || 0} mechanics`], ["World / Terrain", "world", `${project.terrain?.length || 0} zones`],
+      ["Economy", "economy", `${project.economy?.iapProducts?.length || 0} products`], ["Export", "build", `${project.builds?.length || 0} packages`]
+    ];
+    const playtest = project.playtests?.find(session => session.status === "active") || project.playtests?.[0];
+    const activeArc = playtest?.status === "active" ? project.story?.[playtest.arcIndex] : null;
+    const playtestPanel = `<section class="xgp-playtest"><div class="xgp-section-heading"><small>Playable Runtime</small><h2>${playtest ? (playtest.status === "completed" ? "Playtest completed" : xgpSafe(activeArc?.title || "Resume playtest")) : "Start a real playtest"}</h2><p>${activeArc ? xgpSafe(activeArc.summary) : "Run the generated story graph with server-saved score, choices, progression, and rewards."}</p></div>${playtest ? `<div class="xgp-runtime-hud"><span>Node ${Math.min((playtest.arcIndex || 0) + 1, project.story.length)} / ${project.story.length}</span><span>Score ${playtest.score || 0}</span><span>${playtest.balance || 0} ${xgpSafe(project.economy?.currencySymbol)}</span><span>${xgpSafe(playtest.status)}</span></div>` : ""}<div class="xgp-runtime-actions">${activeArc?.choices?.map((choice, index) => `<button type="button" data-playtest-choice="${index}"><strong>${xgpSafe(choice.label)}</strong><small>${xgpSafe(choice.consequence)}</small></button>`).join("") || `<button type="button" class="xgp-runtime-start" data-playtest-start>${playtest?.status === "completed" ? "Play again" : "Start playtest"}</button>`}</div>${playtest?.choices?.length ? `<ol class="xgp-choice-history">${playtest.choices.slice(-4).map(choice => `<li><strong>${xgpSafe(choice.label)}</strong><span>${xgpSafe(choice.consequence)} · +${choice.reward}</span></li>`).join("")}</ol>` : ""}</section>`;
+    if (view === "agent") return `<section class="xgp-view"><div class="xgp-section-heading"><small>AI Builder</small><h1>Create the game, one production step at a time.</h1><p>Every generation is written to the active project and survives reloads.</p></div><div class="xgp-step-grid">${steps.map(([label,module,metric], index) => `<article><span>${String(index + 1).padStart(2,"0")}</span><strong>${xgpSafe(label)}</strong><small>${xgpSafe(metric)}</small><button type="button" data-agent-command="${module}" data-agent-prompt="Generate the next production-ready ${label} pass for ${project.title}." data-agent-return="agent">Generate</button></article>`).join("")}</div><div class="xgp-builder-grid"><article class="xgp-agent-panel"><div class="xgp-chat-log">${(project.aiThreads?.[0]?.messages || []).slice(-5).map(message => `<p><strong>${message.role === "assistant" ? "Comic30" : "Creator"}</strong><span>${xgpSafe(message.content)}</span></p>`).join("")}</div><form class="xgp-agent-compose" data-form="agent-chat"><input type="hidden" name="module" value="auto"><textarea name="message" required placeholder="Describe the next playable pass..."></textarea><button type="submit">Run AI pass</button></form></article><aside class="xgp-live-preview"><img src="/assets/theme-media/gameplay-creature-cinematic.jpg" alt=""><div><small>Active blueprint</small><h2>${xgpSafe(project.title)}</h2><p>${xgpSafe(project.premise)}</p></div></aside></div>${playtestPanel}</section>`;
+    if (view === "studio") {
+      const analytics = project.analytics || {};
+      return `<section class="xgp-view"><div class="xgp-section-heading"><small>Studio</small><h1>Deployed games and live performance.</h1></div><div class="xgp-analytics-grid">${xgpStat(analytics.players || 0,"Players")}${xgpStat(analytics.sessions || 0,"Sessions")}${xgpStat(`${analytics.retentionD1 || 0}%`,"D1 retention")}${xgpStat(analytics.rating || "—","Rating")}</div><div class="xgp-card-row"><article class="xgp-game-record"><img src="/assets/theme-media/gameplay-creature-cinematic.jpg" alt=""><div><small>${xgpSafe(project.lifecycle?.deploymentStatus || "draft")}</small><h2>${xgpSafe(project.title)}</h2><p>${xgpSafe(project.genre)} · ${project.deployments?.length || 0} releases</p><button type="button" data-project-action="deploy">${project.deployments?.length ? "Deploy new version" : "Deploy game"}</button></div></article>${(project.characters || []).slice(0,2).map(c => `<article class="xgp-game-record compact"><img src="/assets/theme-media/hero-character-card.jpg" alt=""><div><small>Playable cast</small><h2>${xgpSafe(c.name)}</h2><p>${xgpSafe(c.role)}</p></div></article>`).join("")}</div></section>`;
+    }
+    if (view === "pipeline") return `<section class="xgp-view"><div class="xgp-section-heading"><small>Pipeline</small><h1>Project library, QA, packaging, and release.</h1></div><div class="xgp-project-library">${state.projects.map(item => `<article class="xgp-project-row ${item.id === project.id ? "active" : ""}"><button type="button" class="xgp-project-open" data-project-id="${item.id}"><strong>${xgpSafe(item.title)}</strong><small>${xgpSafe(item.status)} · QA ${xgpSafe(item.lifecycle?.qaStatus || "not-run")}</small></button><div><button type="button" data-project-id="${item.id}">Edit</button>${item.id === project.id ? `<button type="button" data-build-project="${item.id}">Package</button><button type="button" data-project-action="qa">Run QA</button><button type="button" data-project-action="redeploy">Redeploy</button><button type="button" data-project-action="replicate">Replicate</button><button type="button" data-project-action="${item.lifecycle?.archived ? "restore" : "archive"}">${item.lifecycle?.archived ? "Restore" : "Archive"}</button>` : ""}</div></article>`).join("")}</div><div class="xgp-pipeline-footer"><strong>${project.buildJobs?.length || 0} build jobs · ${project.builds?.length || 0} downloadable packages</strong><button type="button" data-export-project="${project.id}">Export complete game kit</button></div></section>`;
+    if (view === "wallet") return `<section class="xgp-view"><div class="xgp-section-heading"><small>Wallet · final production phase</small><h1>Monetization, rewards, and compliance controls.</h1><p>Wallet configuration remains optional and separated from core game creation.</p></div><div class="xgp-wallet-tabs"><article><strong>Wallet type</strong><span>${xgpSafe(project.economy?.walletMode || "internal-ledger")}</span><small>Custodial, non-custodial, or internal ledger</small></article><article><strong>Tokenization</strong><span>${xgpSafe(project.economy?.chainReadiness || "Disabled")}</span><small>Requires legal and regional review</small></article><article><strong>Ad monetization</strong><span>Rewarded ads staged</span><small>Consent and age gates required</small></article><article><strong>Compliance</strong><span>${project.design?.compliance?.length || 0} controls</span><small>COPPA, store policy, fraud, and disclosures</small></article></div><div class="xgp-builder-grid"><form class="xgp-panel-soft xgp-wallet-form" data-form="economy-update"><h2>Economy settings</h2><label>Currency name<input name="currencyName" value="${xgpSafe(project.economy?.currencyName)}" required></label><label>Symbol<input name="currencySymbol" value="${xgpSafe(project.economy?.currencySymbol)}" required></label><label>Starting balance<input name="startingBalance" type="number" value="${project.economy?.startingBalance || 0}"></label><label>Maximum supply<input name="maxSupply" type="number" value="${project.economy?.maxSupply || 0}"></label><button type="submit">Save economy</button></form><form class="xgp-panel-soft xgp-wallet-form" data-form="iap-add"><h2>Add IAP product</h2><label>Name<input name="name" required></label><label>Platform SKU<input name="platformSku" required></label><label>USD price<input name="priceUsd" type="number" step=".01" required></label><label>Reward grant<input name="grants" type="number" required></label><button type="submit">Add product</button></form></div><div class="xgp-project-library">${(project.economy?.iapProducts || []).map(item => `<article class="xgp-project-row"><span><strong>${xgpSafe(item.name)}</strong><small>${xgpSafe(item.platformSku)}</small></span><strong>$${Number(item.priceUsd || 0).toFixed(2)} · ${item.grants || 0} ${xgpSafe(project.economy?.currencySymbol)}</strong></article>`).join("")}${(project.economy?.rewards || []).map(item => `<article class="xgp-project-row"><span><strong>${xgpSafe(item.name)}</strong><small>Reward trigger · ${xgpSafe(item.trigger)}</small></span><strong>+${item.amount} ${xgpSafe(project.economy?.currencySymbol)}</strong></article>`).join("")}</div></section>`;
+    return `<section class="xgp-view xgp-home-view"><div class="xgp-section-heading"><small>Creator portal</small><h1>${xgpSafe(project.title)}</h1><p>${xgpSafe(project.premise)}</p></div><div class="xgp-hero-row">${xgpHeroCard("Continue Builder","Eight-step creation flow","/assets/theme-media/gameplay-creature-cinematic.jpg","agent")}${xgpHeroCard("Open Studio","Deployments and analytics","/assets/theme-media/hero-character-card.jpg","studio")}${xgpHeroCard("Manage Pipeline","QA, package, replicate","/assets/theme-media/esports-command-center.jpg","pipeline")}</div></section>`;
+  }
+
   function renderPortal() {
     const project = currentProject();
     return `
-      <section class="portal-shell">
+      <section class="portal-shell c30-console-shell">
         <video class="portal-backdrop-video" autoplay muted loop playsinline preload="auto">
           <source src="/assets/videos/user/space-game-portal.mp4" type="video/mp4">
         </video>
         <div class="portal-backdrop-shade" aria-hidden="true"></div>
-        <div class="portal-marquee">
-          <span>Comic30 creator operations</span>
-          <strong>${project ? escapeHtml(project.title) : "Command deck"}</strong>
-          <div>
-            <b>Story AI</b>
-            <b>Wallet Core</b>
-            <b>Mobile Export</b>
-          </div>
-        </div>
-        <div class="portal">
-          ${renderSidebar(project)}
-          <div class="workspace">
-            ${project ? renderWorkspace(project) : (state.view === "new" ? renderNewProject() : renderEmptyWorkspace())}
-          </div>
+        <div class="c30-console">
+          ${renderConsoleRail(project)}
+          <main class="c30-console-main">
+            ${renderConsoleTopbar(project)}
+            ${project ? (state.view === "overview" ? renderConsoleOverview(project) : renderConsoleWorkspace(project)) : renderConsoleEmpty()}
+          </main>
         </div>
       </section>
     `;
   }
 
+  function renderConsoleRail(project) {
+    const tabs = [
+      ["overview", "Home", "H"],
+      ["agent", "Agent", "A"],
+      ["studio", "Studio", "S"],
+      ["pipeline", "Flow", "F"],
+      ["economy", "Wallet", "W"],
+      ["builds", "Build", "B"],
+      ["deploy", "Ship", "D"]
+    ];
+    return `
+      <aside class="c30-rail">
+        <button class="c30-rail-brand" type="button" data-screen="home" aria-label="Back to website">
+          <img src="/assets/images/comic30-logo.png" alt="Comic30">
+        </button>
+        <nav class="c30-rail-nav" aria-label="Creator console">
+          ${tabs.map(([view, label, icon]) => `
+            <button class="c30-rail-item ${state.view === view ? "active" : ""}" type="button" data-view="${view}" title="${escapeHtml(label)}">
+              <span>${escapeHtml(icon)}</span>
+              <em>${escapeHtml(label)}</em>
+            </button>
+          `).join("")}
+        </nav>
+        <button class="c30-rail-new" type="button" data-view="new" title="New project">+</button>
+      </aside>
+    `;
+  }
+
+  function renderConsoleTopbar(project) {
+    return `
+      <header class="c30-console-topbar">
+        <label class="c30-search">
+          <span>Search</span>
+          <input type="search" placeholder="Search projects, agents, rigs, builds">
+        </label>
+        <div class="c30-top-actions">
+          <button type="button" data-view="agent">Ask AI</button>
+          <button type="button" data-view="builds">Builds</button>
+          <span>${project ? `${projectReadiness(project)}% ready` : "No project"}</span>
+        </div>
+      </header>
+    `;
+  }
+
+  function renderConsoleEmpty() {
+    return `
+      <section class="c30-console-content">
+        <div class="c30-empty-console">
+          <span>Comic30 creator console</span>
+          <h1>Create your first game world.</h1>
+          <p>Start with a game premise, then use the AI agent to generate the story, cast, world, economy, and build plan.</p>
+          <button type="button" data-view="new">Create Project</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderConsoleOverview(project) {
+    const steps = pipelineSteps(project);
+    const heroArc = project.story[0];
+    const secondArc = project.story[1] || project.story[0];
+    return `
+      <section class="c30-console-content">
+        <div class="c30-hero-panel">
+          <div class="c30-hero-copy">
+            <span>Active project</span>
+            <h1>${escapeHtml(project.title)}</h1>
+            <p>${escapeHtml(project.tagline || project.design.premise)}</p>
+            <div class="c30-hero-actions">
+              <button type="button" data-view="agent">Open AI Builder</button>
+              <button type="button" data-view="studio">View Cast Studio</button>
+            </div>
+          </div>
+          <div class="c30-hero-media">
+            <video autoplay muted loop playsinline preload="metadata">
+              <source src="/assets/videos/user/space-game-portal.mp4" type="video/mp4">
+            </video>
+            <div>
+              <strong>${escapeHtml(heroArc ? heroArc.title : "Game Builder Agent")}</strong>
+              <span>${escapeHtml(heroArc ? heroArc.summary : project.design.gameplayLoop)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="c30-console-grid">
+          <section class="c30-library-column">
+            <div class="c30-section-heading">
+              <h2>What's happening</h2>
+              <button type="button" data-view="pipeline">View flow</button>
+            </div>
+            <div class="c30-feature-row">
+              <button class="c30-game-card wide" type="button" data-view="agent">
+                <span>AI Game Builder</span>
+                <strong>${escapeHtml(project.design.gameplayLoop)}</strong>
+              </button>
+              <button class="c30-game-card" type="button" data-view="studio">
+                <span>Story Arc</span>
+                <strong>${escapeHtml(secondArc ? secondArc.title : "Playable Cast")}</strong>
+              </button>
+              <button class="c30-game-card" type="button" data-view="deploy">
+                <span>Launch Kit</span>
+                <strong>${projectReadiness(project)}% ready</strong>
+              </button>
+            </div>
+
+            <div class="c30-section-heading">
+              <h2>Project systems</h2>
+            </div>
+            <div class="c30-system-grid">
+              <button type="button" data-view="studio"><b>${project.story.length}</b><span>Story arcs</span></button>
+              <button type="button" data-view="studio"><b>${project.characters.length}</b><span>Characters</span></button>
+              <button type="button" data-view="studio"><b>${(project.terrain || []).length}</b><span>Terrain zones</span></button>
+              <button type="button" data-view="economy"><b>${project.economy.iapProducts.length}</b><span>IAP products</span></button>
+            </div>
+
+            <div class="c30-section-heading">
+              <h2>Build queue</h2>
+              <button type="button" data-view="builds">Open builds</button>
+            </div>
+            <div class="c30-step-strip">
+              ${steps.slice(0, 7).map((step, index) => `
+                <button class="${step.done ? "done" : ""}" type="button" data-view="${escapeHtml(step.view)}">
+                  <b>${String(index + 1).padStart(2, "0")}</b>
+                  <span>${escapeHtml(step.title)}</span>
+                </button>
+              `).join("")}
+            </div>
+          </section>
+
+          <aside class="c30-agent-panel">
+            <div class="c30-agent-head">
+              <span>AI copilot</span>
+              <strong>Game Builder Agent</strong>
+            </div>
+            <div class="c30-agent-thread">
+              <p><b>Creator</b> Build a cinematic mobile RPG with a player-driven reward economy.</p>
+              <p><b>Comic30</b> I can generate the story graph, cast rigs, world rules, wallet economy, prototype loop, and native build tasks.</p>
+            </div>
+            <button type="button" data-view="agent">Start Building</button>
+          </aside>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderConsoleWorkspace(project) {
+    if (state.view === "new") {
+      return `<section class="c30-console-content c30-console-detail">${renderNewProject()}</section>`;
+    }
+    return `
+      <section class="c30-console-content c30-console-detail">
+        ${renderWorkspace(project)}
+      </section>
+    `;
+  }
+
+  function renderPortalChrome(project) {
+    return `
+      <div class="portal-appbar">
+        <button class="portal-back-button" type="button" data-screen="home" aria-label="Back to website">‹</button>
+        <label class="portal-app-search">
+          <span>Search</span>
+          <input type="search" placeholder="Search projects, builds, rigs, agents">
+        </label>
+        <div class="portal-app-status">
+          <span>AI online</span>
+          <span>${project ? `${projectReadiness(project)}% ready` : "No project"}</span>
+        </div>
+        <div class="portal-window-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+      </div>
+    `;
+  }
+
   function renderSidebar(project) {
     const tabs = [
-      ["overview", "Overview"],
-      ["pipeline", "Pipeline"],
-      ["agent", "AI Agent"],
-      ["tools", "Tools"],
-      ["studio", "Studio"],
-      ["economy", "Economy"],
-      ["builds", "Builds"],
-      ["deploy", "Deploy"],
-      ["manage", "Manage"]
+      ["overview", "Home", "⌂"],
+      ["agent", "Builder", "✦"],
+      ["studio", "Studio", "◆"],
+      ["pipeline", "Pipeline", "▤"],
+      ["tools", "Tools", "◈"],
+      ["economy", "Wallet", "◌"],
+      ["builds", "Builds", "▱"],
+      ["deploy", "Launch", "▲"],
+      ["manage", "Manage", "☰"]
     ];
     return `
       <aside class="sidebar">
         <div class="profile-card">
-          <span class="operator-label">Creator operator</span>
+          <span class="operator-label">StormYeti Ultimate</span>
           <strong>${escapeHtml(state.user.name)}</strong>
           <span>${escapeHtml(state.user.email)}</span>
         </div>
@@ -703,15 +905,13 @@
             `).join("") || `<span class="muted">No projects yet.</span>`}
           </div>
         </div>
-        <div class="project-switcher">
-          <div class="tab-list">
-            ${tabs.map(([view, label]) => `
+        <nav class="tab-list" aria-label="Creator workspace">
+            ${tabs.map(([view, label, icon]) => `
               <button class="tab-button ${state.view === view ? "active" : ""}" type="button" data-view="${view}">
-                <span>${label}</span><span aria-hidden="true">></span>
+                <span aria-hidden="true">${icon}</span><span>${label}</span>
               </button>
             `).join("")}
-          </div>
-        </div>
+        </nav>
       </aside>
     `;
   }
@@ -720,22 +920,30 @@
     if (state.view === "new") {
       return renderNewProject();
     }
+    if (state.view === "overview") {
+      return renderOverview(project);
+    }
+    const viewMeta = {
+      studio: ["Studio", "Shape story arcs, playable cast, art direction, and dialogue memory."],
+      pipeline: ["Pipeline", "Run AI passes from brief to native mobile export."],
+      agent: ["Game Builder", "Command the AI agent to create the world, cast, terrain, economy, and playable prototype."],
+      tools: ["Tools", "Use production tools for database, security, audit, compliance, and runtime scaffolds."],
+      economy: ["Wallet Economy", "Tune rewards, IAP products, wallet events, grants, sinks, and fraud controls."],
+      builds: ["Build Lab", "Generate Unity, Unreal, Flutter, React Native, Android, iOS, and Comic30 runtime scaffolds."],
+      deploy: ["Launch Ops", "Prepare store review, QA gates, beta cohorts, disclosures, and account flows."],
+      manage: ["Project Ops", "Review account, privacy, deletion, audit, and production readiness controls."]
+    };
+    const [title, subtitle] = viewMeta[state.view] || [project.title, project.tagline];
     return `
-      <div class="workspace-ribbon">
-        <div><span>Story Ops</span><strong>${project.story.length} arcs</strong></div>
-        <div><span>Cast Ops</span><strong>${project.characters.length} units</strong></div>
-        <div><span>World Ops</span><strong>${(project.terrain || []).length} terrain zones</strong></div>
-        <div><span>Readiness</span><strong>${projectReadiness(project)}%</strong></div>
-      </div>
-      <div class="workspace-header">
+      <div class="workspace-header compact-workspace-header">
         <div>
-          <span class="eyebrow">${escapeHtml(project.status)} project</span>
-          <h1>${escapeHtml(project.title)}</h1>
-          <p class="muted">${escapeHtml(project.tagline)}</p>
+          <span class="eyebrow">${escapeHtml(project.title)} / ${escapeHtml(project.status)}</span>
+          <h1>${escapeHtml(title)}</h1>
+          <p class="muted">${escapeHtml(subtitle)}</p>
         </div>
         <div class="toolbar">
-          <button class="secondary-button" type="button" data-view="studio">Edit</button>
-          <button class="primary-button" type="button" data-export-project="${escapeHtml(project.id)}">Export kit</button>
+          <button class="secondary-button" type="button" data-view="overview">Dashboard</button>
+          <button class="primary-button" type="button" data-view="agent">Open Builder</button>
         </div>
       </div>
       ${state.view === "studio" ? renderStudio(project) : ""}
@@ -746,7 +954,6 @@
       ${state.view === "builds" ? renderBuilds(project) : ""}
       ${state.view === "deploy" ? renderDeploy(project) : ""}
       ${state.view === "manage" ? renderManage(project) : ""}
-      ${state.view === "overview" ? renderOverview(project) : ""}
     `;
   }
 
@@ -804,53 +1011,73 @@
   function renderOverview(project) {
     const steps = pipelineSteps(project);
     return `
-      <div class="stats-grid">
-        <div class="stat"><strong>${project.story.length}</strong><span>Story arcs</span></div>
-        <div class="stat"><strong>${project.characters.length}</strong><span>Characters</span></div>
-        <div class="stat"><strong>${project.economy.iapProducts.length}</strong><span>IAP products</span></div>
-        <div class="stat"><strong>${projectReadiness(project)}%</strong><span>Launch readiness</span></div>
-      </div>
-      <div class="creator-progress">
-        ${steps.map((step, index) => `
-          <button class="${step.done ? "done" : ""}" type="button" data-view="${escapeHtml(step.view)}">
-            <b>${String(index + 1).padStart(2, "0")}</b>
-            <span>${escapeHtml(step.title)}</span>
-          </button>
-        `).join("")}
-      </div>
-      <div class="workspace-grid">
-        <div class="workspace-card">
-          <div class="panel-heading">
-            <div>
-              <h3>Game direction</h3>
-              <p>${escapeHtml(project.genre)} for ${escapeHtml(project.audience)}</p>
-            </div>
-            <span class="badge">${escapeHtml(project.design.engineTrack)}</span>
+      <section class="portal-launcher-hero">
+        <div class="launcher-copy">
+          <span class="eyebrow">AI Game Creation Engine</span>
+          <h1>${escapeHtml(project.title)}</h1>
+          <p>${escapeHtml(project.tagline || project.design.premise)}</p>
+          <div class="launcher-actions">
+            <button class="primary-button" type="button" data-view="agent">Open Game Builder</button>
+            <button class="secondary-button" type="button" data-view="studio">Edit Blueprint</button>
           </div>
-          <p>${escapeHtml(project.design.premise)}</p>
-          <ul class="list">
-            <li class="list-item"><strong>Gameplay loop</strong><p>${escapeHtml(project.design.gameplayLoop)}</p></li>
-            <li class="list-item"><strong>Art style</strong><p>${escapeHtml(project.design.artStyle)}</p></li>
-          </ul>
         </div>
-        <div class="workspace-card">
-          ${renderPlayablePreview(project)}
+        <div class="launcher-showcase">
+          <button class="launcher-feature launcher-feature-wide" type="button" data-view="agent">
+            <span>AI Copilot</span>
+            <strong>Build a playable prototype from one command.</strong>
+            <em>Story, cast, terrain, wallet economy, rigs, and export tasks.</em>
+          </button>
+          <button class="launcher-feature" type="button" data-view="studio">
+            <span>Cast Lab</span>
+            <strong>${project.characters.length} characters</strong>
+            <em>Abilities, motives, rig notes</em>
+          </button>
+          <button class="launcher-feature" type="button" data-view="deploy">
+            <span>Launch Kit</span>
+            <strong>${projectReadiness(project)}% ready</strong>
+            <em>iOS, Android, QA, store review</em>
+          </button>
         </div>
-        <div class="workspace-card">
-          <h3>Current story arcs</h3>
-          <ul class="list">
-            ${project.story.slice(0, 3).map((arc) => `
-              <li class="list-item"><strong>${escapeHtml(arc.title)}</strong><p>${escapeHtml(arc.summary)}</p></li>
-            `).join("")}
-          </ul>
+      </section>
+      <section class="launcher-stats">
+        <div><strong>${project.story.length}</strong><span>Story arcs</span></div>
+        <div><strong>${project.characters.length}</strong><span>Playable units</span></div>
+        <div><strong>${(project.terrain || []).length}</strong><span>Terrain zones</span></div>
+        <div><strong>${project.economy.iapProducts.length}</strong><span>IAP products</span></div>
+      </section>
+      <section class="launcher-shelf">
+        <div class="shelf-heading">
+          <h2>What's happening</h2>
+          <button class="ghost-button" type="button" data-view="pipeline">See pipeline</button>
         </div>
-        <div class="workspace-card">
-          <h3>Launch readiness</h3>
-          <ul class="list">
-            ${steps.slice(0, 5).map((step) => `<li class="list-item"><strong>${escapeHtml(step.title)}</strong><p>${step.done ? "Ready for the next pass." : "Run the AI step or open the tool panel to complete this stage."}</p></li>`).join("")}
-          </ul>
+        <div class="launcher-card-row">
+          <button class="game-tile large" type="button" data-view="agent">
+            <span>Game Builder Agent</span>
+            <strong>${escapeHtml(project.design.gameplayLoop)}</strong>
+          </button>
+          ${project.story.slice(0, 2).map((arc) => `
+            <button class="game-tile" type="button" data-view="studio">
+              <span>Story arc</span>
+              <strong>${escapeHtml(arc.title)}</strong>
+              <em>${escapeHtml(arc.summary)}</em>
+            </button>
+          `).join("")}
         </div>
-      </div>
+      </section>
+      <section class="launcher-shelf">
+        <div class="shelf-heading">
+          <h2>Build queue</h2>
+          <button class="ghost-button" type="button" data-view="builds">Open builds</button>
+        </div>
+        <div class="build-strip">
+          ${steps.map((step, index) => `
+            <button class="${step.done ? "done" : ""}" type="button" data-view="${escapeHtml(step.view)}">
+              <b>${String(index + 1).padStart(2, "0")}</b>
+              <span>${escapeHtml(step.title)}</span>
+            </button>
+          `).join("")}
+        </div>
+      </section>
     `;
   }
 
@@ -920,30 +1147,45 @@
   function renderAgent(project) {
     const thread = (project.aiThreads && project.aiThreads[0]) || { messages: [] };
     const messages = thread.messages || [];
-    const terrain = project.terrain || [];
-    const jobs = project.buildJobs || [];
+    const prompt = `Build a playable ${project.genre || "cinematic action"} prototype for ${project.title}. Generate story beats, cast, terrain, enemy pressure, economy rewards, a rig preview, gameplay loop, and Android/iOS build tasks.`;
     return `
-      <div class="agent-layout">
-        <section class="tool-panel agent-command">
+      <div class="game-builder-shell">
+        <section class="tool-panel builder-chat-panel">
           <div class="panel-heading">
             <div>
-              <h3>AI game creation agent</h3>
-              <p>Create story, characters, worlds, economy systems, terrain, and mobile build jobs through chat.</p>
+              <h3>Game Builder Agent</h3>
+              <p>Ask Comic30 to create the game world, characters, terrain, rewards, playable loop, rigs, and mobile export plan.</p>
             </div>
-            <span class="badge gold">Live engine</span>
+            <span class="badge gold">${state.csrfToken ? "Secure session" : "Engine"}</span>
           </div>
-          <div class="chat-log" aria-label="AI agent chat history">
+          <div class="builder-command-strip">
+            ${[
+              ["Full game pass", "all", prompt],
+              ["Create cast", "character", `Generate playable heroes, rivals, ability kits, motives, rig notes, and dialogue memory for ${project.title}.`],
+              ["Build terrain", "world", `Create terrain zones, landmarks, spawn rules, enemy pressure, lighting, and mission objectives for ${project.title}.`],
+              ["Tune economy", "economy", `Design C30 rewards, IAP products, fraud checks, wallet events, sinks, grants, and player progression for ${project.title}.`],
+              ["Package builds", "build", `Prepare Android, iOS, Unity, Unreal, Flutter, React Native, and Comic30 runtime build tasks for ${project.title}.`]
+            ].map(([label, module, command]) => `
+              <button class="builder-chip" type="button" data-agent-command="${escapeHtml(module)}" data-agent-return="agent" data-agent-prompt="${escapeHtml(command)}">${escapeHtml(label)}</button>
+            `).join("")}
+          </div>
+          <div class="builder-chat-log chat-log" aria-label="AI game builder chat history">
             ${messages.slice(-10).map((message) => `
               <article class="chat-message ${escapeHtml(message.role)}">
                 <span>${escapeHtml(message.role === "user" ? "You" : message.agent || "Comic30")}</span>
                 <p>${escapeHtml(message.content)}</p>
               </article>
-            `).join("")}
+            `).join("") || `
+              <article class="chat-message assistant">
+                <span>Comic30</span>
+                <p>Tell me the game you want to create. I can generate the story, cast, terrain, reward economy, rig notes, gameplay prototype, and build/export tasks into this saved project.</p>
+              </article>
+            `}
           </div>
           <form class="agent-chat-form" data-form="agent-chat">
             <label class="field">
-              <span>Command</span>
-              <textarea name="message" required placeholder="Create a military companion, a playable storm-city terrain zone, a quest branch, wallet rewards, and generate the Android/iOS build scaffold."></textarea>
+              <span>Agent command</span>
+              <textarea name="message" required placeholder="${escapeHtml(prompt)}"></textarea>
             </label>
             <div class="agent-command-row">
               <label class="field">
@@ -958,52 +1200,142 @@
                   <option value="build">Mobile build</option>
                 </select>
               </label>
-              <button class="primary-button" type="submit">Run agent</button>
+              <button class="primary-button" type="submit">Build with AI</button>
             </div>
           </form>
         </section>
 
-        <aside class="tool-panel agent-status">
+        <aside class="tool-panel builder-preview-panel">
           <div class="panel-heading">
             <div>
-              <h3>Engine state</h3>
-              <p>Generated systems saved to the current project.</p>
+              <h3>Live project preview</h3>
+              <p>Generated systems saved to the active game blueprint.</p>
             </div>
             <span class="badge">${escapeHtml(project.engine?.version || "runtime")}</span>
           </div>
-          <div class="agent-metrics">
-            <div><strong>${project.story.length}</strong><span>Story arcs</span></div>
-            <div><strong>${project.characters.length}</strong><span>Characters</span></div>
-            <div><strong>${project.worlds.length}</strong><span>Worlds</span></div>
-            <div><strong>${terrain.length}</strong><span>Terrain zones</span></div>
-          </div>
-          <h3>Latest terrain</h3>
-          <ul class="list">
-            ${terrain.slice(-3).reverse().map((zone) => `
-              <li class="list-item">
-                <strong>${escapeHtml(zone.name)}</strong>
-                <p>${escapeHtml(zone.biome)} / ${escapeHtml(zone.lighting || "cinematic lighting")}</p>
-              </li>
-            `).join("") || `<li class="list-item"><strong>No terrain yet</strong><p>Ask the agent to create a world or terrain zone.</p></li>`}
-          </ul>
-          <hr class="soft-rule">
-          <h3>Build jobs</h3>
-          <ul class="list">
-            ${jobs.slice(0, 3).map((job) => `
-              <li class="list-item">
-                <strong>${escapeHtml(job.target)} / ${escapeHtml(job.status)}</strong>
-                <p>${escapeHtml(job.notes)}</p>
-                <div class="form-actions">
-                  <a class="secondary-button" href="${escapeHtml(job.url)}">Download scaffold</a>
-                </div>
-              </li>
-            `).join("") || `<li class="list-item"><strong>No build jobs yet</strong><p>Run the build module or generate a scaffold from Builds.</p></li>`}
-          </ul>
-          <div class="form-actions">
-            <button class="secondary-button" type="button" data-build-project="${escapeHtml(project.id)}">Generate Android/iOS scaffold</button>
-          </div>
+          ${renderBuilderMetrics(project)}
+          ${renderGameplayPreview(project)}
         </aside>
+
+        ${renderCastPanel(project)}
+        ${renderTerrainPanel(project)}
+        ${renderAssetRigPanel(project)}
+        ${renderExportStatus(project)}
       </div>
+    `;
+  }
+
+  function renderBuilderMetrics(project) {
+    const terrain = project.terrain || [];
+    const iap = project.economy?.iapProducts || [];
+    return `
+      <div class="builder-metrics">
+        ${[
+          ["Story arcs", project.story.length],
+          ["Cast", project.characters.length],
+          ["Terrain", terrain.length],
+          ["IAP products", iap.length],
+          ["Readiness", `${projectReadiness(project)}%`],
+          ["LLM hook", "OpenAI-ready"]
+        ].map(([label, value]) => `
+          <div class="builder-metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderGameplayPreview(project) {
+    return `
+      <div class="gameplay-prototype">
+        <div class="prototype-topline">
+          <span>Gameplay prototype canvas</span>
+          <b>${escapeHtml(project.genre || "Action RPG")}</b>
+        </div>
+        <canvas class="gameplay-canvas" data-gameplay-preview data-story="${project.story.length}" data-cast="${project.characters.length}" data-terrain="${(project.terrain || []).length}"></canvas>
+        <div class="prototype-hud">
+          <span>Player</span><span>Enemy pressure</span><span>Rewards</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderCastPanel(project) {
+    return `
+      <section class="tool-panel builder-panel cast-panel">
+        <div class="panel-heading">
+          <div><h3>Generated cast</h3><p>Playable characters, rivals, motives, ability kits, and rig notes.</p></div>
+          <span class="badge">${project.characters.length} units</span>
+        </div>
+        <div class="builder-card-grid">
+          ${project.characters.slice(0, 4).map((character) => `
+            <article class="builder-card">
+              <strong>${escapeHtml(character.name)}</strong>
+              <span>${escapeHtml(character.role || "Playable unit")}</span>
+              <p>${escapeHtml(character.motive || character.bio || "Generated character profile")}</p>
+              <div class="tag-row">${(character.abilities || []).slice(0, 3).map((item) => `<em>${escapeHtml(item)}</em>`).join("")}</div>
+            </article>
+          `).join("") || `<article class="builder-card"><strong>No cast yet</strong><span>Ask the agent</span><p>Generate heroes, rivals, companions, rig notes, and abilities.</p></article>`}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderTerrainPanel(project) {
+    const terrain = project.terrain || [];
+    return `
+      <section class="tool-panel builder-panel terrain-panel">
+        <div class="panel-heading">
+          <div><h3>Terrain and world builder</h3><p>Editable zones, lighting, landmarks, spawn rules, mission routes, and enemy pressure.</p></div>
+          <span class="badge">World ops</span>
+        </div>
+        <div class="builder-list">
+          ${terrain.slice(0, 4).map((zone) => `
+            <article>
+              <strong>${escapeHtml(zone.name)}</strong>
+              <p>${escapeHtml(zone.biome || "Biome")} / ${escapeHtml(zone.lighting || "Lighting pass")}</p>
+            </article>
+          `).join("") || `<article><strong>No terrain yet</strong><p>Ask for a city, planet, dungeon, battlefield, or mission map.</p></article>`}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderAssetRigPanel(project) {
+    const rigs = project.characters.flatMap((character) => character.rigNotes ? [{ name: character.name, notes: character.rigNotes }] : []);
+    return `
+      <section class="tool-panel builder-panel rig-panel">
+        <div class="panel-heading">
+          <div><h3>Asset and rig viewer</h3><p>Generated 3D rig notes and import targets for playable assets.</p></div>
+          <span class="badge gold">Rig lab</span>
+        </div>
+        <div class="rig-stage">
+          <div class="rig-orbit"></div>
+          <div class="rig-silhouette"></div>
+          <div>
+            <strong>${escapeHtml(rigs[0]?.name || "3D asset slot")}</strong>
+            <p>${escapeHtml(rigs[0]?.notes || "Import a rig or ask the agent to create a playable character, vehicle, companion, boss, or environment asset.")}</p>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderExportStatus(project) {
+    const jobs = project.buildJobs || [];
+    const buildTargets = ["Unity", "Unreal", "Flutter", "React Native", "Comic30 runtime", "Android", "iOS"];
+    return `
+      <section class="tool-panel builder-panel export-panel">
+        <div class="panel-heading">
+          <div><h3>Export and build status</h3><p>Native build pipeline scaffolds and store-readiness tasks.</p></div>
+          <button class="secondary-button" type="button" data-build-project="${escapeHtml(project.id)}">Generate scaffold</button>
+        </div>
+        <div class="target-grid">
+          ${buildTargets.map((target) => {
+            const job = jobs.find((item) => (item.target || "").toLowerCase().includes(target.toLowerCase().split(" ")[0]));
+            return `<span class="${job ? "ready" : ""}">${escapeHtml(target)}<b>${escapeHtml(job?.status || "queued")}</b></span>`;
+          }).join("")}
+        </div>
+      </section>
     `;
   }
 
@@ -1491,6 +1823,364 @@
     }
   }
 
+  const gamePassMedia = {
+    hero: "assets/videos/user/space-game-hero.mp4",
+    world: "assets/videos/user/space-game-world.mp4",
+    story: "assets/videos/user/space-game-character.mp4",
+    economy: "assets/videos/user/mobile-gameplay-rewards.mp4",
+    launch: "assets/videos/user/mobile-gameplay-export.mp4"
+  };
+
+  function gameVideo(src, className = "") {
+    return `<video class="${className}" src="${src}" autoplay muted loop playsinline preload="metadata"></video>`;
+  }
+
+  function gameInitials(value) {
+    return String(value || "C30")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join("") || "C30";
+  }
+
+  function gameProject(project) {
+    return project || {
+      title: "Neon Rift",
+      genre: "Cinematic action RPG",
+      audience: "mobile-first RPG players",
+      artStyle: "Stylized AAA mobile realism",
+      premise: "A creator-led world where player choices rewrite alliances, combat pressure, and rewards.",
+      storyArcs: [],
+      characters: [],
+      terrainZones: [],
+      iapProducts: []
+    };
+  }
+
+  function gameReadiness(project) {
+    try {
+      return projectReadiness(project);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function gameListCount(value) {
+    return Array.isArray(value) ? value.length : 0;
+  }
+
+  function gameNav(view, label, icon) {
+    const active = (state.view || "overview") === view;
+    return `
+      <button type="button" class="game-nav-item ${active ? "is-active" : ""}" data-view="${view}" aria-label="${escapeHtml(label)}">
+        <span class="game-nav-icon">${escapeHtml(icon)}</span>
+        <span>${escapeHtml(label)}</span>
+      </button>`;
+  }
+
+  function gameMediaTile(label, title, src, view) {
+    return `
+      <button type="button" class="game-media-tile" data-view="${view}">
+        ${gameVideo(src, "game-media-video")}
+        <span class="game-media-shade"></span>
+        <span class="game-media-copy">
+          <small>${escapeHtml(label)}</small>
+          <strong>${escapeHtml(title)}</strong>
+        </span>
+      </button>`;
+  }
+
+  function gameMetric(value, label) {
+    return `
+      <article class="game-metric">
+        <strong>${escapeHtml(value)}</strong>
+        <span>${escapeHtml(label)}</span>
+      </article>`;
+  }
+
+  function gameProjectSummary(project) {
+    const safeProject = gameProject(project);
+    return `
+      <section class="game-hero-card">
+        <div>
+          <p class="game-eyebrow">AI Game Creation Engine</p>
+          <h1>${escapeHtml(safeProject.title)}</h1>
+          <p>${escapeHtml(safeProject.premise || "Create the story, cast, economy, and mobile build from one command center.")}</p>
+          <div class="game-actions">
+            <button type="button" class="game-primary-action" data-view="agent">Open Game Builder</button>
+            <button type="button" class="game-soft-action" data-view="studio">Preview Studio</button>
+          </div>
+        </div>
+      </section>`;
+  }
+
+  function renderAuthPage() {
+    document.body.className = "game-auth-body";
+    const isLogin = state.authMode === "login";
+    return `
+      <main class="game-auth-stage">
+        ${gameVideo(gamePassMedia.hero, "game-stage-video")}
+        <section class="game-auth-shell">
+          <div class="game-auth-copy">
+            <p class="game-eyebrow">Creator Access</p>
+            <h1>${isLogin ? "Welcome back to Comic30." : "Build the next playable world."}</h1>
+            <p>Direct story, cast, terrain, economy, and launch tasks from a game-app workspace built for AI creation.</p>
+            <div class="game-phone-preview" aria-hidden="true">
+              <div class="game-phone-orb"></div>
+              <div class="game-phone-avatar">C30</div>
+              <strong>Neon Rift</strong>
+              <span>Prototype readiness 75%</span>
+              <div class="game-phone-card">Story graph synced</div>
+              <div class="game-phone-card">Playable cast generated</div>
+            </div>
+          </div>
+          <form class="game-auth-panel" data-form="auth">
+            <div class="game-auth-tabs">
+              <button type="button" class="${!isLogin ? "is-active" : ""}" data-screen="auth" data-auth-mode="register">Create Account</button>
+              <button type="button" class="${isLogin ? "is-active" : ""}" data-screen="auth" data-auth-mode="login">Sign In</button>
+            </div>
+            <p class="game-eyebrow">${isLogin ? "Sign In" : "Creator Profile"}</p>
+            <h2>${isLogin ? "Enter Comic30." : "Create Your Comic30 Account."}</h2>
+            <p class="game-muted">Access the AI game builder workspace and project engine.</p>
+            ${!isLogin ? `
+              <label class="game-field">
+                <span>Name</span>
+                <input name="name" autocomplete="name" required>
+              </label>` : ""}
+            <label class="game-field">
+              <span>Email</span>
+              <input name="email" type="email" autocomplete="email" required>
+            </label>
+            <label class="game-field">
+              <span>Password</span>
+              <input name="password" type="password" autocomplete="${isLogin ? "current-password" : "new-password"}" required>
+            </label>
+            <div class="game-form-actions">
+              <button class="game-primary-action" type="submit">${isLogin ? "Sign In" : "Create Account"}</button>
+              <button class="game-soft-action" type="button" data-screen="home">Back to Site</button>
+            </div>
+          </form>
+        </section>
+      </main>`;
+  }
+
+  function renderPortal() {
+    if (!state.user) {
+      return renderAuthPage();
+    }
+
+    document.body.className = "game-portal-body";
+    const project = currentProject();
+    return `
+      <main class="game-portal-stage">
+        ${gameVideo(gamePassMedia.hero, "game-stage-video")}
+        <section class="game-app-window">
+          ${renderConsoleRail(project)}
+          <div class="game-main-panel">
+            ${renderConsoleTopbar(project)}
+            ${project ? renderConsoleWorkspace(project) : renderEmptyGameLibrary()}
+          </div>
+        </section>
+      </main>`;
+  }
+
+  function renderConsoleRail(project) {
+    const safeProject = gameProject(project);
+    const userName = state.user?.name || "Creator";
+    return `
+      <aside class="game-rail">
+        <div class="game-profile-row">
+          <span class="game-avatar">${escapeHtml(gameInitials(userName))}</span>
+          <div>
+            <strong>${escapeHtml(userName)}</strong>
+            <small>Comic30 Ultimate</small>
+          </div>
+        </div>
+        <nav class="game-nav-list" aria-label="Creator workspace">
+          ${gameNav("overview", "Home", "HM")}
+          ${gameNav("agent", "Builder", "AI")}
+          ${gameNav("studio", "Studio", "ST")}
+          ${gameNav("pipeline", "Pipeline", "PL")}
+          ${gameNav("tools", "Tools", "TL")}
+          ${gameNav("economy", "Wallet", "WL")}
+          ${gameNav("builds", "Builds", "BD")}
+        </nav>
+        <div class="game-recent">
+          <small>Active Project</small>
+          <button type="button" class="game-recent-card" data-view="overview">
+            <strong>${escapeHtml(safeProject.title)}</strong>
+            <span>${escapeHtml(safeProject.genre || "Action RPG")}</span>
+          </button>
+        </div>
+        <button type="button" class="game-signout" data-logout>Sign out</button>
+      </aside>`;
+  }
+
+  function renderConsoleTopbar(project) {
+    const safeProject = gameProject(project);
+    return `
+      <header class="game-topbar">
+        <div class="game-search">
+          <span>Search projects, builds, rigs</span>
+          <input aria-label="Search Comic30" placeholder="Search Comic30">
+        </div>
+        <div class="game-top-pills">
+          <span>${escapeHtml(safeProject.title)}</span>
+          <span>${gameReadiness(project)}% ready</span>
+        </div>
+      </header>`;
+  }
+
+  function renderEmptyGameLibrary() {
+    return `
+      <section class="game-empty">
+        <div>
+          <p class="game-eyebrow">New Game World</p>
+          <h1>Create the first Comic30 project.</h1>
+          <p>Start with a premise, then let the agent build story, cast, worlds, economy, and launch tasks.</p>
+          <button type="button" class="game-primary-action" data-view="new">New Project</button>
+        </div>
+      </section>`;
+  }
+
+  function renderConsoleOverview(project) {
+    return renderConsoleWorkspace(project);
+  }
+
+  function renderConsoleWorkspace(project) {
+    const safeProject = gameProject(project);
+    const view = state.view || "overview";
+    const readiness = gameReadiness(project);
+
+    if (view === "new") {
+      return `
+        <section class="game-workspace">
+          <div class="game-section-heading">
+            <p class="game-eyebrow">Open The Portal</p>
+            <h1>Generate a new build blueprint.</h1>
+          </div>
+          <form class="game-form-card" data-form="create-project">
+            <label class="game-field"><span>Game title</span><input name="title" value="Neon Rift" required></label>
+            <label class="game-field"><span>Genre</span><input name="genre" value="Cinematic action RPG" required></label>
+            <label class="game-field"><span>Audience</span><input name="audience" value="mobile-first RPG players"></label>
+            <label class="game-field"><span>Art style</span><input name="artStyle" value="Stylized AAA mobile realism"></label>
+            <label class="game-field game-field-wide"><span>Core premise</span><textarea name="premise" required>A rebel creator discovers that every player choice reshapes the city, its factions, and its reward economy.</textarea></label>
+            <button class="game-primary-action" type="submit">Generate Blueprint</button>
+          </form>
+        </section>`;
+    }
+
+    if (view === "agent") {
+      return `
+        <section class="game-workspace game-builder-grid">
+          <div class="game-chat-panel">
+            <p class="game-eyebrow">AI Copilot</p>
+            <h1>Tell Comic30 what to build.</h1>
+            <div class="game-chat-log">
+              <article><strong>Comic30</strong><p>Give me a game idea, genre, world style, characters, or mechanics. I will turn it into a playable blueprint.</p></article>
+              ${state.previewResult ? `<article><strong>Generated</strong><p>${escapeHtml(state.previewResult)}</p></article>` : ""}
+            </div>
+            <form class="game-agent-form" data-form="agent-chat">
+              <input name="module" type="hidden" value="game-builder">
+              <textarea name="message" placeholder="Build a third-person space RPG with faction loyalty, boss fights, and reward chests..." required></textarea>
+              <button class="game-primary-action" type="submit">Generate</button>
+            </form>
+          </div>
+          <aside class="game-live-preview">
+            ${gameMediaTile("Live Preview", "World + Terrain", gamePassMedia.world, "studio")}
+            <div class="game-preview-stack">
+              ${gameMetric(gameListCount(safeProject.characters), "Playable characters")}
+              ${gameMetric(gameListCount(safeProject.terrainZones) || 1, "Terrain zones")}
+              ${gameMetric(`${readiness}%`, "Launch readiness")}
+            </div>
+          </aside>
+        </section>`;
+    }
+
+    if (view === "economy") {
+      return `
+        <section class="game-workspace">
+          <div class="game-feature-banner">
+            ${gameVideo(gamePassMedia.economy, "game-banner-video")}
+            <div>
+              <p class="game-eyebrow">Wallet Economy</p>
+              <h1>Tune rewards and purchases.</h1>
+              <p>Model token rewards, IAP products, grants, sinks, ledger events, fraud checks, and progression pressure.</p>
+            </div>
+          </div>
+          <div class="game-card-grid">
+            ${gameMetric("1,840 C30", "Player balance")}
+            ${gameMetric(gameListCount(safeProject.iapProducts) || 2, "IAP products")}
+            ${gameMetric("0", "Fraud alerts")}
+            ${gameMetric("Ready", "Ledger simulation")}
+          </div>
+        </section>`;
+    }
+
+    if (view === "builds" || view === "pipeline") {
+      return `
+        <section class="game-workspace">
+          <div class="game-feature-banner">
+            ${gameVideo(gamePassMedia.launch, "game-banner-video")}
+            <div>
+              <p class="game-eyebrow">Launch Kit</p>
+              <h1>Package the mobile build.</h1>
+              <p>Queue iOS, Android, QA, app-store notes, data safety review, and runtime export tasks.</p>
+              <div class="game-actions">
+                <button class="game-primary-action" type="button" data-build-project="${escapeHtml(safeProject.id || "")}">Build Project</button>
+                <button class="game-soft-action" type="button" data-export-project="${escapeHtml(safeProject.id || "")}">Export Kit</button>
+              </div>
+            </div>
+          </div>
+          <div class="game-step-row">
+            ${["Brief", "Generate", "Balance", "QA", "Export"].map((step, index) => `
+              <article class="game-step ${index === 0 ? "is-active" : ""}">
+                <small>0${index + 1}</small>
+                <strong>${step}</strong>
+              </article>`).join("")}
+          </div>
+        </section>`;
+    }
+
+    if (view === "studio" || view === "tools") {
+      return `
+        <section class="game-workspace">
+          <div class="game-section-heading">
+            <p class="game-eyebrow">Studio</p>
+            <h1>Preview the generated game systems.</h1>
+          </div>
+          <div class="game-card-grid game-card-grid-three">
+            ${gameMediaTile("Story", "Branching Quest Graph", gamePassMedia.story, "agent")}
+            ${gameMediaTile("World", "Terrain Builder", gamePassMedia.world, "agent")}
+            ${gameMediaTile("Launch", "Store Package", gamePassMedia.launch, "builds")}
+          </div>
+        </section>`;
+    }
+
+    return `
+      <section class="game-workspace">
+        ${gameProjectSummary(safeProject)}
+        <div class="game-card-grid">
+          ${gameMetric(gameListCount(safeProject.storyArcs) || 2, "Story arcs")}
+          ${gameMetric(gameListCount(safeProject.characters) || 2, "Playable units")}
+          ${gameMetric(gameListCount(safeProject.terrainZones) || 1, "Terrain zones")}
+          ${gameMetric(`${readiness || 75}%`, "Launch readiness")}
+        </div>
+        <section class="game-now-section">
+          <div class="game-section-title">
+            <h2>What’s happening</h2>
+            <button type="button" class="game-soft-action" data-view="agent">Open builder</button>
+          </div>
+          <div class="game-media-row">
+            ${gameMediaTile("Game Builder Agent", "Explore, choose, battle, earn, upgrade", gamePassMedia.hero, "agent")}
+            ${gameMediaTile("Story Arc", "Opening Signal", gamePassMedia.story, "studio")}
+            ${gameMediaTile("World Ops", "Realtime Terrain Pass", gamePassMedia.world, "studio")}
+          </div>
+        </section>
+      </section>`;
+  }
+
   document.addEventListener("click", async (event) => {
     const engineModeButton = event.target.closest("[data-engine-mode]");
     if (engineModeButton) {
@@ -1553,6 +2243,51 @@
       state.view = "overview";
       state.previewResult = "";
       render();
+      return;
+    }
+
+    const actionButton = event.target.closest("[data-project-action]");
+    if (actionButton) {
+      const project = currentProject();
+      if (!project) return;
+      actionButton.disabled = true;
+      try {
+        const response = await api(`/api/projects/${project.id}/action`, { method: "POST", body: { action: actionButton.dataset.projectAction } });
+        replaceProject(response.project);
+        if (response.createdProject) {
+          state.projects.unshift(response.createdProject);
+          state.currentProjectId = response.createdProject.id;
+        }
+        render();
+        showToast(`${actionButton.dataset.projectAction} completed and saved.`);
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        actionButton.disabled = false;
+      }
+      return;
+    }
+
+    const playtestButton = event.target.closest("[data-playtest-start], [data-playtest-choice]");
+    if (playtestButton) {
+      const project = currentProject();
+      if (!project) return;
+      playtestButton.disabled = true;
+      try {
+        const isChoice = playtestButton.hasAttribute("data-playtest-choice");
+        const response = await api(`/api/projects/${project.id}/playtest`, {
+          method: "POST",
+          body: isChoice ? { action: "choose", choiceIndex: Number(playtestButton.dataset.playtestChoice) } : { action: "start" }
+        });
+        replaceProject(response.project);
+        state.view = "agent";
+        render();
+        showToast(response.session.status === "completed" ? "Playtest completed and saved." : "Playtest progress saved.");
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        playtestButton.disabled = false;
+      }
       return;
     }
 
@@ -1624,7 +2359,7 @@
           }
         });
         replaceProject(response.project);
-        state.view = "tools";
+        state.view = agentCommandButton.dataset.agentReturn || "tools";
         render();
         showToast("Tool pass saved.");
       } catch (error) {
@@ -1834,6 +2569,89 @@
       }
     });
   });
+
+  function initGameplayPreviews() {
+    const canvases = Array.from(document.querySelectorAll("[data-gameplay-preview]"));
+    if (!canvases.length || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    canvases.forEach((canvas) => {
+      if (canvas.dataset.ready === "true") return;
+      canvas.dataset.ready = "true";
+      const context = canvas.getContext("2d");
+      let frame = 0;
+
+      const resize = () => {
+        const rect = canvas.getBoundingClientRect();
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+        canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+        context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      };
+
+      const draw = () => {
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+        const storyCount = Number(canvas.dataset.story || 1);
+        const castCount = Number(canvas.dataset.cast || 1);
+        const terrainCount = Number(canvas.dataset.terrain || 1);
+        frame += 0.012;
+
+        context.clearRect(0, 0, width, height);
+        const gradient = context.createLinearGradient(0, 0, width, height);
+        gradient.addColorStop(0, "rgba(2, 12, 20, 0.94)");
+        gradient.addColorStop(0.55, "rgba(10, 24, 34, 0.9)");
+        gradient.addColorStop(1, "rgba(44, 21, 12, 0.74)");
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, width, height);
+
+        context.strokeStyle = "rgba(55, 196, 255, 0.18)";
+        context.lineWidth = 1;
+        for (let x = -40; x < width + 80; x += 34) {
+          context.beginPath();
+          context.moveTo(x + Math.sin(frame) * 18, height);
+          context.lineTo(width / 2 + (x - width / 2) * 0.16, height * 0.42);
+          context.stroke();
+        }
+        for (let y = height * 0.48; y < height; y += 24) {
+          context.beginPath();
+          context.moveTo(0, y + Math.sin(frame + y) * 2);
+          context.lineTo(width, y + Math.sin(frame + y) * 2);
+          context.stroke();
+        }
+
+        const playerX = width * (0.24 + Math.sin(frame * 1.7) * 0.06);
+        const playerY = height * 0.64;
+        context.fillStyle = "#25f5b3";
+        context.beginPath();
+        context.moveTo(playerX, playerY - 18);
+        context.lineTo(playerX - 14, playerY + 18);
+        context.lineTo(playerX + 18, playerY + 12);
+        context.closePath();
+        context.fill();
+
+        for (let index = 0; index < Math.max(3, terrainCount + castCount); index += 1) {
+          const angle = frame * (0.8 + index * 0.06) + index * 1.9;
+          const orbitX = width * 0.62 + Math.cos(angle) * (80 + index * 10);
+          const orbitY = height * 0.48 + Math.sin(angle) * (38 + index * 4);
+          context.fillStyle = index % 2 ? "#ff8a2a" : "#37c4ff";
+          context.globalAlpha = 0.78;
+          context.beginPath();
+          context.arc(orbitX, orbitY, 5 + (index % 3), 0, Math.PI * 2);
+          context.fill();
+        }
+        context.globalAlpha = 1;
+
+        context.fillStyle = "rgba(255, 255, 255, 0.9)";
+        context.font = "800 12px Arial";
+        context.fillText(`${storyCount} story arcs / ${castCount} cast / ${terrainCount} terrain`, 16, 24);
+        requestAnimationFrame(draw);
+      };
+
+      resize();
+      draw();
+      window.addEventListener("resize", resize);
+    });
+  }
 
   loadSession();
   initNeuralCanvas();
@@ -3065,4 +3883,1880 @@
     resize();
     draw();
   }
+  function gpSafe(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function gpCurrentProject() {
+    const project = typeof currentProject === "function" ? currentProject() : null;
+    return project || {
+      title: "Neon Rift",
+      genre: "Cinematic action RPG",
+      audience: "mobile-first RPG players",
+      artStyle: "Stylized AAA mobile realism",
+      premise: "A rebel creator discovers that every player choice reshapes the city, its factions, and its reward economy.",
+      story: [
+        { title: "Opening Signal", summary: "A distress beacon reveals the first playable faction conflict." },
+        { title: "Economy War", summary: "Rewards, upgrades, and alliances begin reacting to player behavior." }
+      ],
+      characters: [
+        { name: "Astra Vale", role: "Player lead", motive: "Find the origin of the signal." },
+        { name: "Morrow", role: "Rival engineer", motive: "Protect the wallet core." }
+      ],
+      terrain: [
+        { name: "Orbital Foundry", mood: "storm-lit station" }
+      ],
+      economy: {
+        currencySymbol: "C30",
+        iapProducts: [
+          { name: "Starter Credit Pack", price: "$4.99" },
+          { name: "Battle Pass", price: "$9.99" }
+        ]
+      }
+    };
+  }
+
+  function gpPill(label, view, activeView) {
+    return `
+      <button class="gp-pill ${activeView === view ? "is-active" : ""}" type="button" data-view="${gpSafe(view)}">
+        ${gpSafe(label)}
+      </button>
+    `;
+  }
+
+  function gpFeedCard(label, title, body, view) {
+    return `
+      <button class="gp-feed-card" type="button" data-view="${gpSafe(view)}">
+        <span>${gpSafe(label)}</span>
+        <strong>${gpSafe(title)}</strong>
+        <small>${gpSafe(body)}</small>
+      </button>
+    `;
+  }
+
+  function gpGlassStat(value, label) {
+    return `
+      <div class="gp-stat">
+        <strong>${gpSafe(value)}</strong>
+        <span>${gpSafe(label)}</span>
+      </div>
+    `;
+  }
+
+  function gpBuilderWorkspace(project) {
+    const prompt = "Build a cinematic mobile action RPG with a playable tutorial, two character classes, a faction choice, wallet rewards, and one exportable build target.";
+    return `
+      <section class="gp-builder-grid">
+        <article class="gp-agent-panel">
+          <div class="gp-panel-heading">
+            <span>AI Copilot</span>
+            <b>Live</b>
+          </div>
+          <div class="gp-chat-stream">
+            <p><strong>Creator</strong>${gpSafe(prompt)}</p>
+            <p><strong>Comic30 Agent</strong>I drafted the world, cast, economy loop, terrain beats, and build queue. Review the preview panels before export.</p>
+          </div>
+          <div class="gp-chat-compose">
+            <input type="text" value="${gpSafe(prompt)}" aria-label="Game builder prompt">
+            <button type="button" data-agent-step="full-game">Generate</button>
+          </div>
+        </article>
+        <article class="gp-preview-panel">
+          <span>Playable Preview</span>
+          <div class="gp-preview-screen">
+            <div class="gp-player-silhouette"></div>
+            <div class="gp-hud gp-hud-top">Quest: breach the foundry gate</div>
+            <div class="gp-hud gp-hud-bottom">C30 +25 | Ally loyalty +12</div>
+          </div>
+        </article>
+        <article class="gp-mini-panel">
+          <span>Cast</span>
+          ${project.characters.slice(0, 3).map((character) => `
+            <div class="gp-list-row">
+              <b>${gpSafe(character.name)}</b>
+              <small>${gpSafe(character.role || "Playable unit")}</small>
+            </div>
+          `).join("")}
+        </article>
+        <article class="gp-mini-panel">
+          <span>World</span>
+          ${(project.terrain || []).slice(0, 3).map((zone) => `
+            <div class="gp-list-row">
+              <b>${gpSafe(zone.name)}</b>
+              <small>${gpSafe(zone.mood || "Generated terrain")}</small>
+            </div>
+          `).join("")}
+        </article>
+      </section>
+    `;
+  }
+
+  function gpStudioWorkspace(project) {
+    return `
+      <section class="gp-card-grid">
+        ${project.characters.map((character, index) => `
+          <article class="gp-character-card">
+            <div class="gp-avatar gp-avatar-${index + 1}"></div>
+            <span>${gpSafe(character.role || "Playable unit")}</span>
+            <h3>${gpSafe(character.name)}</h3>
+            <p>${gpSafe(character.motive || "Generated motives, ability notes, and rig directions are ready for review.")}</p>
+          </article>
+        `).join("")}
+      </section>
+    `;
+  }
+
+  function gpPipelineWorkspace(project) {
+    const steps = [
+      ["Game brief", "Premise, audience, genre, art direction"],
+      ["Story graph", `${project.story.length} arcs mapped`],
+      ["Playable cast", `${project.characters.length} units generated`],
+      ["World terrain", `${(project.terrain || []).length} zones staged`],
+      ["Wallet economy", `${project.economy.iapProducts.length} products drafted`],
+      ["Build export", "iOS and Android tasks queued"]
+    ];
+    return `
+      <section class="gp-pipeline">
+        ${steps.map((step, index) => `
+          <article class="gp-step ${index < 3 ? "is-ready" : ""}">
+            <b>${String(index + 1).padStart(2, "0")}</b>
+            <h3>${gpSafe(step[0])}</h3>
+            <p>${gpSafe(step[1])}</p>
+          </article>
+        `).join("")}
+      </section>
+    `;
+  }
+
+  function gpWalletWorkspace(project) {
+    return `
+      <section class="gp-builder-grid gp-wallet-grid">
+        <article class="gp-agent-panel">
+          <div class="gp-panel-heading">
+            <span>Wallet Economy</span>
+            <b>${gpSafe(project.economy.currencySymbol || "C30")}</b>
+          </div>
+          <div class="gp-ledger">
+            <div><span>Player balance</span><strong>1,840 ${gpSafe(project.economy.currencySymbol || "C30")}</strong></div>
+            <div><span>Purchase queue</span><strong>${project.economy.iapProducts.length} products</strong></div>
+            <div><span>Fraud checks</span><strong>Demo mode</strong></div>
+          </div>
+        </article>
+        <article class="gp-mini-panel gp-wide-mini">
+          <span>In-app products</span>
+          ${project.economy.iapProducts.map((product) => `
+            <div class="gp-list-row">
+              <b>${gpSafe(product.name)}</b>
+              <small>${gpSafe(product.price || "draft")}</small>
+            </div>
+          `).join("")}
+        </article>
+      </section>
+    `;
+  }
+
+  function gpHomeWorkspace(project) {
+    const firstArc = project.story[0] || {};
+    const secondArc = project.story[1] || firstArc;
+    return `
+      <section class="gp-hero-grid">
+        <article class="gp-feature-card gp-feature-large">
+          <span>AI Game Creation Engine</span>
+          <h1>${gpSafe(project.title)}</h1>
+          <p>Create the story, cast, economy, terrain, gameplay loop, and mobile export from one cinematic workspace.</p>
+          <div class="gp-actions">
+            <button class="gp-action gp-hot" type="button" data-view="agent">Open Game Builder</button>
+            <button class="gp-action" type="button" data-view="studio">View Studio</button>
+          </div>
+        </article>
+        <article class="gp-feature-card gp-blue">
+          <span>AI Copilot</span>
+          <h2>One command to playable prototype.</h2>
+          <p>Story, rigs, terrain, economy, store tasks, and build status stay connected.</p>
+        </article>
+        <article class="gp-feature-card">
+          <span>Cast Lab</span>
+          <h2>${project.characters.length} characters</h2>
+          <p>Motives, ability kits, rig notes, and dialogue memory.</p>
+        </article>
+        <article class="gp-feature-card">
+          <span>Launch Kit</span>
+          <h2>${typeof projectReadiness === "function" ? projectReadiness(project) : 75}% ready</h2>
+          <p>iOS, Android, QA, privacy, and store review tasks.</p>
+        </article>
+      </section>
+      <section class="gp-metrics-row">
+        ${gpGlassStat(project.story.length, "Story arcs")}
+        ${gpGlassStat(project.characters.length, "Playable units")}
+        ${gpGlassStat((project.terrain || []).length, "Terrain zones")}
+        ${gpGlassStat(project.economy.iapProducts.length, "IAP products")}
+      </section>
+      <section class="gp-feed">
+        <div class="gp-section-title">
+          <span>What's happening</span>
+          <button type="button" data-view="pipeline">See pipeline</button>
+        </div>
+        <div class="gp-feed-row">
+          ${gpFeedCard("Game Builder Agent", project.design?.gameplayLoop || "Explore, battle, earn, upgrade, and unlock new routes.", "Generated from the active project blueprint.", "agent")}
+          ${gpFeedCard("Story Arc", firstArc.title || "Opening Signal", firstArc.summary || "The first playable branch is ready.", "studio")}
+          ${gpFeedCard("Story Arc", secondArc.title || "Economy War", secondArc.summary || "Reward pressure and faction choices are linked.", "wallet")}
+        </div>
+      </section>
+    `;
+  }
+
+  function gpPortalWorkspace(view, project) {
+    if (view === "agent" || view === "builder") return gpBuilderWorkspace(project);
+    if (view === "studio") return gpStudioWorkspace(project);
+    if (view === "pipeline" || view === "builds" || view === "deploy") return gpPipelineWorkspace(project);
+    if (view === "wallet" || view === "economy") return gpWalletWorkspace(project);
+    if (view === "tools") return gpPipelineWorkspace(project);
+    return gpHomeWorkspace(project);
+  }
+
+  function renderAuthPage() {
+    const isLogin = state.authMode === "login";
+    return `
+      <main class="gp-auth-stage">
+        <div class="gp-glow gp-glow-left"></div>
+        <div class="gp-glow gp-glow-right"></div>
+        <section class="gp-auth-device">
+          <aside class="gp-auth-copy">
+            <div class="gp-logo-chip">
+              <img src="/assets/brand/comic30-icon-trim.png" alt="">
+              <span>Comic30</span>
+            </div>
+            <p>Creator access</p>
+            <h1>${isLogin ? "Return to the build deck." : "Create your game command center."}</h1>
+            <span>Build worlds, direct playable cast systems, preview gameplay, tune wallet rewards, and prepare mobile exports.</span>
+            <div class="gp-auth-tags">
+              <b>World</b><b>Story</b><b>Cast</b><b>Wallet</b><b>Export</b>
+            </div>
+          </aside>
+          <form class="gp-auth-panel" id="auth-form">
+            <div class="gp-auth-tabs">
+              <button type="button" class="${!isLogin ? "is-active" : ""}" data-screen="auth" data-auth-mode="register">Create account</button>
+              <button type="button" class="${isLogin ? "is-active" : ""}" data-screen="auth" data-auth-mode="login">Sign in</button>
+            </div>
+            <div class="gp-auth-title">
+              <span>${isLogin ? "Sign in" : "Creator profile"}</span>
+              <h2>${isLogin ? "Welcome back." : "Start building."}</h2>
+            </div>
+            ${!isLogin ? `
+              <label>
+                <span>Name</span>
+                <input name="name" type="text" autocomplete="name" required>
+              </label>
+            ` : ""}
+            <label>
+              <span>Email</span>
+              <input name="email" type="email" autocomplete="email" required>
+            </label>
+            <label>
+              <span>Password</span>
+              <input name="password" type="password" autocomplete="${isLogin ? "current-password" : "new-password"}" required>
+            </label>
+            <div class="gp-auth-actions">
+              <button class="gp-gradient-button" type="submit">${isLogin ? "Sign in" : "Create account"}</button>
+              <button class="gp-quiet-button" type="button" data-screen="home">Back to site</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  }
+
+  function renderPortal() {
+    const project = gpCurrentProject();
+    const view = state.view || "overview";
+    const nav = [
+      ["overview", "Home"],
+      ["agent", "Builder"],
+      ["studio", "Studio"],
+      ["pipeline", "Pipeline"],
+      ["tools", "Tools"],
+      ["wallet", "Wallet"]
+    ];
+    return `
+      <main class="gp-portal-stage">
+        <div class="gp-glow gp-glow-left"></div>
+        <div class="gp-glow gp-glow-right"></div>
+        <section class="gp-console">
+          <aside class="gp-rail">
+            <button class="gp-brand-card" type="button" data-screen="home" aria-label="Back to Comic30 website">
+              <img src="/assets/brand/comic30-icon-trim.png" alt="">
+              <span>
+                <b>Comic30</b>
+                <small>AI Game Engine</small>
+              </span>
+            </button>
+            <div class="gp-player-card">
+              <span>Creator</span>
+              <strong>${gpSafe(state.user?.name || "Gloryvee Cordero")}</strong>
+              <small>${gpSafe(state.user?.email || "glory@depth.ai")}</small>
+            </div>
+            <div class="gp-project-card">
+              <span>Active project</span>
+              <strong>${gpSafe(project.title)}</strong>
+              <small>${gpSafe(project.genre || "Action RPG")}</small>
+            </div>
+            <nav class="gp-nav" aria-label="Creator workspace">
+              ${nav.map(([key, label]) => gpPill(label, key, view)).join("")}
+            </nav>
+          </aside>
+          <section class="gp-workspace">
+            <header class="gp-topbar">
+              <label class="gp-search">
+                <span>Search projects, builds, rigs</span>
+                <input type="search" placeholder="Search Comic30">
+              </label>
+              <div class="gp-top-actions">
+                <span>${gpSafe(state.user?.name ? `Hi, ${state.user.name.split(" ")[0]}` : "Creator online")}</span>
+                <button type="button" data-logout>Sign out</button>
+              </div>
+            </header>
+            <div class="gp-workspace-scroll">
+              ${gpPortalWorkspace(view, project)}
+            </div>
+          </section>
+        </section>
+      </main>
+    `;
+  }
+
+  function c30PassNavItem(key, label, activeView) {
+    const isActive = key === activeView;
+    const icons = { overview: "GP", agent: "AI", studio: "LB", pipeline: "PK", wallet: "WL" };
+    return `
+      <button type="button" class="c30-pass-nav-item${isActive ? " is-active" : ""}" data-view="${key}">
+        <span>${gpSafe(icons[key] || label.slice(0, 2).toUpperCase())}</span>
+        <b>${gpSafe(label)}</b>
+      </button>
+    `;
+  }
+
+  function c30MediaCard(title, subtitle, image, tag) {
+    return `
+      <article class="c30-pass-media-card">
+        <img src="${image}" alt="">
+        <div>
+          <small>${gpSafe(tag)}</small>
+          <strong>${gpSafe(title)}</strong>
+          <span>${gpSafe(subtitle)}</span>
+        </div>
+      </article>
+    `;
+  }
+
+  function c30MiniTile(title, subtitle, image) {
+    return `
+      <article class="c30-pass-mini-tile">
+        <img src="${image}" alt="">
+        <div>
+          <strong>${gpSafe(title)}</strong>
+          <span>${gpSafe(subtitle)}</span>
+        </div>
+      </article>
+    `;
+  }
+
+  function c30PhoneCard(title, subtitle, image) {
+    return `
+      <article class="c30-phone-card">
+        <img src="${image}" alt="">
+        <strong>${gpSafe(title)}</strong>
+        <span>${gpSafe(subtitle)}</span>
+      </article>
+    `;
+  }
+
+  function c30PortalWorkspace(view, project) {
+    if (view === "agent") {
+      return `
+        <section class="c30-builder-grid">
+          <article class="c30-agent-panel">
+            <span>AI Copilot</span>
+            <h2>Build a playable mission from one command.</h2>
+            <div class="c30-chat-stream">
+              <p><b>You</b> Create a cinematic mobile RPG with faction choices, a boss rig, and reward loops.</p>
+              <p><b>Comic30</b> Drafting story arcs, cast notes, terrain beats, wallet economy, and build tasks.</p>
+            </div>
+            <form class="c30-chat-compose">
+              <input placeholder="Ask Comic30 to build a game scene">
+              <button type="button">Send</button>
+            </form>
+          </article>
+          <article class="c30-live-preview">
+            <img src="/assets/theme-media/gameplay-fps-arena.jpg" alt="">
+            <div>
+              <small>Gameplay Prototype</small>
+              <strong>Combat loop preview</strong>
+            </div>
+          </article>
+        </section>
+      `;
+    }
+
+    if (view === "studio") {
+      return `
+        <section class="c30-content-rail">
+          ${c30MediaCard("Playable Cast", "Hero, rival, companion, and boss role cards.", "/assets/theme-media/hero-character-card.jpg", "Character lab")}
+          ${c30MediaCard("Creature Encounter", "Enemy state, attacks, counters, and arena pressure.", "/assets/theme-media/gameplay-creature-cinematic.jpg", "Rig preview")}
+          ${c30MediaCard("Ability Kits", "Cooldowns, upgrades, traversal, and cinematic triggers.", "/assets/theme-media/moba-gameplay-grid-c.jpg", "Design pass")}
+        </section>
+      `;
+    }
+
+    if (view === "pipeline") {
+      return `
+        <section class="c30-pipeline-board">
+          ${["Game Brief", "Story Graph", "Playable Cast", "World Terrain", "Economy", "QA Build", "Store Export"].map((step, index) => `
+            <article>
+              <small>${String(index + 1).padStart(2, "0")}</small>
+              <strong>${step}</strong>
+              <span>${index < 4 ? "Generated" : index < 6 ? "Queued" : "Ready"}</span>
+            </article>
+          `).join("")}
+        </section>
+      `;
+    }
+
+    if (view === "wallet") {
+      return `
+        <section class="c30-economy-layout">
+          <article class="c30-economy-card">
+            <small>Wallet Economy</small>
+            <h2>Rewards, IAP products, and ledger events.</h2>
+            <div class="c30-economy-row"><span>Player balance</span><b>1,840 C30</b></div>
+            <div class="c30-economy-row"><span>Starter pack</span><b>$4.99</b></div>
+            <div class="c30-economy-row"><span>Fraud checks</span><b>Active</b></div>
+          </article>
+          <article class="c30-live-preview">
+            <img src="/assets/theme-media/moba-gameplay-grid-b.jpg" alt="">
+            <div>
+              <small>Reward Scene</small>
+              <strong>Battle pass loop mapped</strong>
+            </div>
+          </article>
+        </section>
+      `;
+    }
+
+    return `
+      <section class="c30-happening">
+        <div class="c30-happening-head">
+          <h2>What's happening</h2>
+          <div>
+            <button type="button">All builds</button>
+            <button type="button">Open plans</button>
+            <button type="button">Perks</button>
+          </div>
+        </div>
+        <div class="c30-content-rail">
+          ${c30MediaCard(project.title || "Neon Rift", "A playable mobile RPG world generated from your prompt.", "/assets/theme-media/gameplay-creature-cinematic.jpg", "Active project")}
+          ${c30MediaCard("World + Terrain", "Mission routes, enemy pressure, lighting, and reward paths.", "/assets/theme-media/gameplay-fps-arena.jpg", "World builder")}
+          ${c30MediaCard("Mobile Export", "iOS, Android, QA notes, and store metadata.", "/assets/theme-media/moba-gameplay-grid-a.jpg", "Launch kit")}
+        </div>
+        <section class="c30-feature-band">
+          <div>
+            <small>Game Builder Agent</small>
+            <h2>Explore, choose, battle, earn, upgrade, and export.</h2>
+            <p>Comic30 keeps story arcs, cast systems, terrain, wallet economy, and app-store build tasks in one creator workspace.</p>
+          </div>
+          <div class="c30-stack-cards">
+            ${c30MiniTile("Story Arc", "Opening Signal", "/assets/theme-media/hero-character-card.jpg")}
+            ${c30MiniTile("World Pass", "Neon sector terrain", "/assets/theme-media/gameplay-fps-arena.jpg")}
+            ${c30MiniTile("Build Kit", "Android and iOS queued", "/assets/theme-media/moba-gameplay-grid-c.jpg")}
+          </div>
+        </section>
+      </section>
+    `;
+  }
+
+  function renderAuthPage() {
+    const isLogin = state.authMode === "login";
+    return `
+      <main class="c30-auth-mobile-scene">
+        <section class="c30-auth-copy">
+          <img src="/assets/brand/comic30-icon-trim.png" alt="">
+          <small>Comic30 creator access</small>
+          <h1>${isLogin ? "Continue your game universe." : "Build the first playable world."}</h1>
+          <p>Story, cast, terrain, wallet economy, and mobile export in a cinematic AI creation workspace.</p>
+        </section>
+        <section class="c30-auth-phones" aria-hidden="true">
+          <div class="c30-auth-phone is-profile">
+            <span>Activity - 53%</span>
+            <img src="/assets/theme-media/hero-character-card.jpg" alt="">
+            <h2>NeonRift_01</h2>
+            ${c30PhoneCard("VERTI_39", "Online - testing boss loop", "/assets/theme-media/gameplay-creature-cinematic.jpg")}
+            ${c30PhoneCard("Beautifulboy", "Offline - last game: Valhalla", "/assets/theme-media/moba-gameplay-grid-b.jpg")}
+          </div>
+          <div class="c30-auth-phone is-store">
+            <label><input placeholder="Search"></label>
+            <h2>Trend</h2>
+            <div class="c30-auth-tags"><span>Shooter</span><span>RPG</span><span>MMO</span></div>
+            ${c30PhoneCard("Destiny 2", "Generated raid mission", "/assets/theme-media/gameplay-fps-arena.jpg")}
+            ${c30PhoneCard("Squad Game", "Teamplay prototype", "/assets/theme-media/moba-gameplay-grid-c.jpg")}
+          </div>
+        </section>
+        <section class="c30-auth-glass">
+          <div class="c30-auth-switch">
+            <button type="button" class="${!isLogin ? "is-active" : ""}" data-auth-mode="register">Create</button>
+            <button type="button" class="${isLogin ? "is-active" : ""}" data-auth-mode="login">Sign in</button>
+          </div>
+          <form id="auth-form" class="c30-auth-form">
+            <small>${isLogin ? "Creator login" : "Creator account"}</small>
+            <h2>${isLogin ? "Welcome back" : "Create your account"}</h2>
+            ${!isLogin ? `<label>Name<input name="name" autocomplete="name" required></label>` : ""}
+            <label>Email<input name="email" type="email" autocomplete="email" required></label>
+            <label>Password<input name="password" type="password" autocomplete="${isLogin ? "current-password" : "new-password"}" required></label>
+            <div class="c30-auth-actions">
+              <button type="submit">${isLogin ? "Sign in" : "Create account"}</button>
+              <button type="button" data-screen="home">Back to site</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  }
+
+  function renderPortal() {
+    const project = launcherProject();
+    const view = state.view || "overview";
+    const activeMeta = launcherViewMeta(view);
+    const nav = [
+      ["overview", "Game Pass"],
+      ["agent", "Builder"],
+      ["studio", "Library"],
+      ["pipeline", "Cloud Builds"],
+      ["wallet", "Store"]
+    ];
+
+    return `
+      <main class="c30-pass-page">
+        <section class="c30-pass-window">
+          <aside class="c30-pass-sidebar">
+            <button type="button" class="c30-pass-profile" data-screen="home">
+              <img src="/assets/brand/comic30-icon-trim.png" alt="">
+              <span><b>Comic30</b><small>Creator Engine</small></span>
+            </button>
+            <nav class="c30-pass-nav" aria-label="Creator workspace">
+              ${nav.map(([key, label]) => c30PassNavItem(key, label, view)).join("")}
+            </nav>
+            <div class="c30-pass-recents">
+              <span>Most Recent</span>
+              ${c30MiniTile(project.title || "Neon Rift", "Last edited today", "/assets/theme-media/gameplay-creature-cinematic.jpg")}
+              ${c30MiniTile("Terrain Pass", "World render queued", "/assets/theme-media/gameplay-fps-arena.jpg")}
+              ${c30MiniTile("Export Kit", "Store review draft", "/assets/theme-media/moba-gameplay-grid-c.jpg")}
+            </div>
+          </aside>
+          <section class="c30-pass-main">
+            <header class="c30-pass-topbar">
+              <button type="button" class="c30-pass-back" data-screen="home" aria-label="Back to Comic30">Back</button>
+              <label class="c30-pass-search"><input type="search" placeholder="Search projects, builds, rigs, and scenes"></label>
+              <button type="button" class="c30-pass-avatar" data-logout aria-label="Sign out">${gpSafe((state.user?.name || "C").slice(0, 1))}</button>
+            </header>
+            <section class="c30-pass-content">
+              <div class="c30-pass-title">
+                <h1>${gpSafe(activeMeta.title || "Game Pass")}</h1>
+                <p>${gpSafe(activeMeta.subtitle || "Build, preview, package, and operate your playable game project.")}</p>
+              </div>
+              ${c30PortalWorkspace(view, project)}
+            </section>
+          </section>
+        </section>
+      </main>
+    `;
+  }
+
+  function cleanMenuItem(key, label, current) {
+    const active = (current || "overview") === key;
+    return `
+      <button class="c30-clean-menu-item ${active ? "is-active" : ""}" type="button" data-view="${key}">
+        <span>${gpSafe(label)}</span>
+      </button>
+    `;
+  }
+
+  function cleanGameCard(title, subtitle, image, tag) {
+    return `
+      <article class="c30-clean-game-card">
+        <img src="${image}" alt="">
+        <div>
+          <small>${gpSafe(tag)}</small>
+          <strong>${gpSafe(title)}</strong>
+          <span>${gpSafe(subtitle)}</span>
+        </div>
+      </article>
+    `;
+  }
+
+  function cleanMiniProject(title, image, meta) {
+    return `
+      <article class="c30-clean-mini-project">
+        <img src="${image}" alt="">
+        <div>
+          <strong>${gpSafe(title)}</strong>
+          <span>${gpSafe(meta)}</span>
+        </div>
+      </article>
+    `;
+  }
+
+  function cleanHeroScene(project) {
+    return `
+      <section class="c30-clean-hero-row">
+        ${cleanGameCard("Story Forge", "Branching decisions, faction pressure, and dialogue memory.", "/assets/theme-media/gameplay-creature-cinematic.jpg", "AI Director")}
+        ${cleanGameCard("World Builder", "Terrain passes, enemy routes, objectives, and lighting.", "/assets/theme-media/gameplay-fps-arena.jpg", "Live Scene")}
+        ${cleanGameCard("Export Kit", "iOS, Android, backend contracts, and store review tasks.", "/assets/theme-media/moba-gameplay-grid-c.jpg", "Build Ready")}
+      </section>
+      <section class="c30-clean-feature">
+        <div>
+          <small>Play the prototype</small>
+          <h2>${gpSafe(project.title)}</h2>
+          <p>${gpSafe(project.premise || "Create a playable world where story, economy, characters, and combat systems update from one command.")}</p>
+        </div>
+        <div class="c30-clean-feature-stack">
+          ${cleanMiniProject("Opening Signal", "/assets/theme-media/hero-character-card.jpg", "Story arc")}
+          ${cleanMiniProject("Faction Echo", "/assets/theme-media/moba-gameplay-grid-a.jpg", "Character system")}
+          ${cleanMiniProject("Reward Loop", "/assets/theme-media/moba-gameplay-grid-b.jpg", "Wallet economy")}
+        </div>
+      </section>
+    `;
+  }
+
+  function cleanBuilderScene(project) {
+    return `
+      <section class="c30-clean-builder">
+        <article class="c30-clean-chat">
+          <header>
+            <small>Comic30 AI Copilot</small>
+            <h2>Build the game from a command.</h2>
+          </header>
+          <div class="c30-clean-chat-stream">
+            <p><b>Creator</b><span>Make a cinematic mobile action RPG with two rival factions and a reward economy.</span></p>
+            <p><b>Comic30</b><span>Generated story arcs, cast motives, a city terrain pass, wallet events, and export tasks.</span></p>
+            <p><b>Comic30</b><span>Prototype canvas is ready for gameplay tuning and rig review.</span></p>
+          </div>
+          <form class="c30-clean-prompt" data-agent-chat>
+            <input name="prompt" placeholder="Ask Comic30 to build, change, or package the game..." autocomplete="off">
+            <button type="submit">Send</button>
+          </form>
+        </article>
+        <article class="c30-clean-preview">
+          <img src="/assets/theme-media/gameplay-fps-arena.jpg" alt="">
+          <div>
+            <small>Live project preview</small>
+            <h2>${gpSafe(project.title)}</h2>
+            <p>World, cast, reward economy, and build status update as the agent works.</p>
+          </div>
+        </article>
+      </section>
+    `;
+  }
+
+  function cleanStudioScene(project) {
+    const characters = project.characters?.length ? project.characters : [
+      { name: "Kai Vector", role: "Rebel pilot" },
+      { name: "Mara Voss", role: "Faction rival" }
+    ];
+    return `
+      <section class="c30-clean-library">
+        <article class="c30-clean-wide-card">
+          <img src="/assets/theme-media/hero-character-card.jpg" alt="">
+          <div>
+            <small>Character Studio</small>
+            <h2>Cast, motives, abilities, and rig notes.</h2>
+          </div>
+        </article>
+        <div class="c30-clean-cast-list">
+          ${characters.map((character) => `
+            <article>
+              <span></span>
+              <div>
+                <strong>${gpSafe(character.name || "Playable Unit")}</strong>
+                <small>${gpSafe(character.role || "Character rig")}</small>
+              </div>
+            </article>
+          `).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  function cleanPipelineScene() {
+    return `
+      <section class="c30-clean-pipeline">
+        ${["Game brief", "Story graph", "Playable cast", "World terrain", "Wallet economy", "Native builds", "Deploy"].map((step, index) => `
+          <article>
+            <small>${String(index + 1).padStart(2, "0")}</small>
+            <strong>${gpSafe(step)}</strong>
+            <span>${index < 4 ? "Ready" : "Queued"}</span>
+          </article>
+        `).join("")}
+      </section>
+    `;
+  }
+
+  function cleanWalletScene(project) {
+    return `
+      <section class="c30-clean-wallet">
+        <article>
+          <small>Internal ledger</small>
+          <h2>Wallet economy</h2>
+          <p>Model rewards, grants, sinks, IAP products, fraud checks, and regional disclosures before launch.</p>
+          <div class="c30-clean-stat-row">
+            <span><b>1,840</b>C30 balance</span>
+            <span><b>${gpSafe((project.iapProducts || []).length || 2)}</b>IAP products</span>
+            <span><b>0</b>open flags</span>
+          </div>
+        </article>
+        <article>
+          <small>Recent events</small>
+          ${["Quest reward +25 C30", "Starter pack mapped", "Daily sink balanced", "Ledger audit passed"].map((item) => `
+            <div class="c30-clean-ledger-line">${gpSafe(item)}</div>
+          `).join("")}
+        </article>
+      </section>
+    `;
+  }
+
+  function cleanWorkspace(view, project) {
+    if (view === "agent") return cleanBuilderScene(project);
+    if (view === "studio") return cleanStudioScene(project);
+    if (view === "pipeline" || view === "tools") return cleanPipelineScene();
+    if (view === "wallet") return cleanWalletScene(project);
+    return cleanHeroScene(project);
+  }
+
+  function renderAuthPage() {
+    const isLogin = state.authMode === "login";
+    return `
+      <main class="c30-clean-auth">
+        <section class="c30-clean-auth-copy">
+          <img src="/assets/brand/comic30-icon-trim.png" alt="">
+          <small>Comic30 creator access</small>
+          <h1>${isLogin ? "Return to your game studio." : "Create inside a playable command center."}</h1>
+          <p>Build worlds, cast systems, wallet economies, terrain, gameplay previews, and mobile exports from one agent workspace.</p>
+        </section>
+        <section class="c30-clean-phone-stage" aria-hidden="true">
+          <article class="c30-clean-phone c30-clean-phone-left">
+            <div class="c30-clean-phone-icon"></div>
+            <h2>Neon Rift</h2>
+            <p>Activity - 68%</p>
+            ${cleanMiniProject("Kai Vector", "/assets/theme-media/hero-character-card.jpg", "Online - tuning abilities")}
+            ${cleanMiniProject("Boss Rig", "/assets/theme-media/gameplay-creature-cinematic.jpg", "Queued - animation pass")}
+          </article>
+          <article class="c30-clean-phone c30-clean-phone-right">
+            <label><span></span><input placeholder="Search"></label>
+            <h2>Trend</h2>
+            <div class="c30-clean-chip-row"><span>Shooter</span><span>RPG</span><span>MMO</span></div>
+            ${cleanGameCard("Destiny Route", "Mission prototype generated.", "/assets/theme-media/gameplay-fps-arena.jpg", "Playable")}
+            ${cleanGameCard("Squad Loop", "Reward economy balanced.", "/assets/theme-media/moba-gameplay-grid-b.jpg", "Ready")}
+          </article>
+        </section>
+        <section class="c30-clean-auth-panel">
+          <div class="c30-clean-auth-tabs">
+            <button type="button" class="${!isLogin ? "is-active" : ""}" data-auth-mode="register">Create Account</button>
+            <button type="button" class="${isLogin ? "is-active" : ""}" data-auth-mode="login">Sign In</button>
+          </div>
+          <form id="auth-form" class="c30-clean-auth-form">
+            <small>${isLogin ? "Creator login" : "Creator account"}</small>
+            <h2>${isLogin ? "Sign in to Comic30" : "Create your Comic30 account"}</h2>
+            ${!isLogin ? `<label>Name<input name="name" autocomplete="name" required></label>` : ""}
+            <label>Email<input name="email" type="email" autocomplete="email" required></label>
+            <label>Password<input name="password" type="password" autocomplete="${isLogin ? "current-password" : "new-password"}" required></label>
+            <div class="c30-clean-auth-actions">
+              <button type="submit">${isLogin ? "Sign In" : "Create Account"}</button>
+              <button type="button" data-screen="home">Back to Site</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  }
+
+  function renderPortal() {
+    const project = launcherProject();
+    const view = state.view || "overview";
+    const nav = [
+      ["overview", "Home"],
+      ["agent", "Builder"],
+      ["studio", "Studio"],
+      ["pipeline", "Pipeline"],
+      ["wallet", "Wallet"]
+    ];
+    return `
+      <main class="c30-clean-portal">
+        <section class="c30-clean-window">
+          <aside class="c30-clean-sidebar">
+            <button class="c30-clean-profile" type="button" data-screen="home">
+              <img src="/assets/brand/comic30-icon-trim.png" alt="">
+              <span><b>Comic30</b><small>Creator Engine</small></span>
+            </button>
+            <nav class="c30-clean-menu" aria-label="Creator workspace">
+              ${nav.map(([key, label]) => cleanMenuItem(key, label, view)).join("")}
+            </nav>
+            <div class="c30-clean-recent-list">
+              <small>Recent projects</small>
+              ${cleanMiniProject(project.title, "/assets/theme-media/gameplay-creature-cinematic.jpg", project.genre || "Action RPG")}
+              ${cleanMiniProject("Terrain Pass", "/assets/theme-media/gameplay-fps-arena.jpg", "World build")}
+              ${cleanMiniProject("Cast Lab", "/assets/theme-media/hero-character-card.jpg", "2 units")}
+            </div>
+          </aside>
+          <section class="c30-clean-main">
+            <header class="c30-clean-topbar">
+              <label class="c30-clean-search">
+                <input type="search" placeholder="Search projects, builds, rigs, and worlds">
+              </label>
+              <button type="button" class="c30-clean-user" data-logout>${gpSafe((state.user?.name || "Creator").slice(0, 1))}</button>
+            </header>
+            <section class="c30-clean-content">
+              <div class="c30-clean-page-title">
+                <div>
+                  <h1>${gpSafe(project.title)}</h1>
+                  <p>AI game creation workspace for story, terrain, character rigs, gameplay systems, economy, and builds.</p>
+                </div>
+              </div>
+              ${cleanWorkspace(view, project)}
+            </section>
+          </section>
+        </section>
+      </main>
+    `;
+  }
+
+  function render() {
+    ["home-surface", "auth-surface", "portal-surface", "game-auth-body", "game-portal-body", "gp-auth-body", "gp-portal-body"].forEach((className) => {
+      document.body.classList.remove(className);
+    });
+
+    if (!state.user && state.screen === "auth") {
+      document.body.classList.add("gp-auth-body");
+      if (accountActions) accountActions.innerHTML = "";
+      app.innerHTML = renderAuthPage();
+      activateMotion();
+      return;
+    }
+
+    if (!state.user) {
+      document.body.classList.add("home-surface");
+      renderAccountActions();
+      app.innerHTML = renderHome();
+      activateMotion();
+      return;
+    }
+
+    document.body.classList.add("gp-portal-body");
+    if (accountActions) accountActions.innerHTML = "";
+    app.innerHTML = renderPortal();
+    activateMotion();
+    initGameplayPreviews();
+  }
+
+  function launcherProject() {
+    return gpCurrentProject ? gpCurrentProject() : {
+      title: "Neon Rift",
+      genre: "Cinematic action RPG",
+      premise: "A creator-led world where player choices rewrite alliances and rewards.",
+      artStyle: "Stylized AAA mobile realism",
+      storyArcs: ["Opening Signal", "Economy War"],
+      characters: [{ name: "Cipher", role: "Scout" }, { name: "Vanta", role: "Rival" }],
+      iapProducts: [{ name: "Starter Credit Pack", price: "$4.99" }]
+    };
+  }
+
+  function launcherViewMeta(view) {
+    const meta = {
+      overview: {
+        nav: "Home",
+        title: "Game Pass",
+        kicker: "Comic30 launcher",
+        subtitle: "Build, preview, package, and operate the active game project.",
+        accent: "violet",
+        heroImage: "/assets/theme-media/gameplay-creature-cinematic.jpg"
+      },
+      agent: {
+        nav: "Builder",
+        title: "AI Builder",
+        kicker: "Agent workspace",
+        subtitle: "Prompt the copilot, generate playable systems, and inspect the prototype plan.",
+        accent: "pink",
+        heroImage: "/assets/theme-media/gameplay-fps-arena.jpg"
+      },
+      studio: {
+        nav: "Studio",
+        title: "Studio Lab",
+        kicker: "Characters and rigs",
+        subtitle: "Review cast, abilities, imported models, terrain passes, and playable moments.",
+        accent: "cyan",
+        heroImage: "/assets/theme-media/hero-character-card.jpg"
+      },
+      pipeline: {
+        nav: "Pipeline",
+        title: "Build Queue",
+        kicker: "Native export",
+        subtitle: "Track Unity, Unreal, Flutter, React Native, and Comic30 runtime build targets.",
+        accent: "blue",
+        heroImage: "/assets/theme-media/esports-command-center.jpg"
+      },
+      wallet: {
+        nav: "Wallet",
+        title: "Wallet Economy",
+        kicker: "Rewards and IAP",
+        subtitle: "Balance rewards, ledger events, IAP products, fraud checks, and regional controls.",
+        accent: "green",
+        heroImage: "/assets/theme-media/moba-gameplay-grid-b.jpg"
+      }
+    };
+    return meta[view] || meta.overview;
+  }
+
+  function launcherCard(title, copy, image, badge) {
+    return `
+      <article class="launcher-cover-card">
+        <img src="${image}" alt="">
+        <span>${gpSafe(badge || "Live")}</span>
+        <div>
+          <strong>${gpSafe(title)}</strong>
+          <small>${gpSafe(copy)}</small>
+        </div>
+      </article>
+    `;
+  }
+
+  function launcherNavItem(key, label, activeView) {
+    const isActive = key === activeView;
+    return `
+      <button type="button" class="launcher-nav-item${isActive ? " is-active" : ""}" data-view="${key}">
+        <span class="launcher-nav-dot"></span>
+        <span>${gpSafe(label)}</span>
+      </button>
+    `;
+  }
+
+  function launcherMetric(value, label) {
+    return `
+      <article class="launcher-metric">
+        <strong>${gpSafe(value)}</strong>
+        <span>${gpSafe(label)}</span>
+      </article>
+    `;
+  }
+
+  function launcherStoryFeed(project) {
+    return `
+      <section class="launcher-wide-panel">
+        <div class="launcher-section-head">
+          <span>What's happening</span>
+          <button type="button" data-view="pipeline">View pipeline</button>
+        </div>
+        <div class="launcher-cover-row">
+          ${launcherCard("Game Builder Agent", gpSafe(project.premise || "One command creates the first playable game brief."), "/assets/theme-media/gameplay-creature-cinematic.jpg", "AI copilot")}
+          ${launcherCard("Playable Cast", "Characters, motives, abilities, and rig notes are generated as a cast system.", "/assets/theme-media/hero-character-card.jpg", "Cast")}
+          ${launcherCard("World Composer", "Terrain, lighting, enemies, quests, and player goals become editable game data.", "/assets/comic30-world-builder.png", "World")}
+        </div>
+      </section>
+    `;
+  }
+
+  function launcherBuilderView(project) {
+    return `
+      <section class="launcher-builder-grid">
+        <article class="launcher-chat-panel">
+          <div class="launcher-section-head">
+            <span>AI Copilot</span>
+            <button type="button">Connected</button>
+          </div>
+          <div class="launcher-chat-stream">
+            <p><b>Creator</b> Build a cinematic sci-fi RPG with faction choices and reward loops.</p>
+            <p><b>Comic30</b> I created a playable brief, two story arcs, two cast units, economy rules, and mobile export tasks.</p>
+            <p><b>Next</b> Generate terrain pass, enemy pressure, and first gameplay objective.</p>
+          </div>
+          <form class="launcher-prompt-form">
+            <input type="text" value="Create a playable mission from this premise" aria-label="Prompt">
+            <button type="button">Run agent</button>
+          </form>
+        </article>
+        <article class="launcher-preview-panel">
+          <img src="/assets/theme-media/gameplay-fps-arena.jpg" alt="">
+          <div class="launcher-preview-copy">
+            <span>Live prototype</span>
+            <strong>${gpSafe(project.title)} mission loop</strong>
+            <small>World route, enemy beats, reward triggers, and export tasks generated.</small>
+          </div>
+        </article>
+      </section>
+    `;
+  }
+
+  function launcherStudioView(project) {
+    const cast = (project.characters || [{ name: "Cipher", role: "Scout" }, { name: "Vanta", role: "Rival" }]).slice(0, 4);
+    return `
+      <section class="launcher-builder-grid">
+        <article class="launcher-preview-panel launcher-tall-media">
+          <img src="/assets/theme-media/hero-character-card.jpg" alt="">
+          <div class="launcher-preview-copy">
+            <span>Rig viewer</span>
+            <strong>Cast and imported assets</strong>
+            <small>Ability kits, dialogue memory, rig notes, and animation states.</small>
+          </div>
+        </article>
+        <article class="launcher-chat-panel">
+          <div class="launcher-section-head">
+            <span>Playable cast</span>
+            <button type="button">2 rigs</button>
+          </div>
+          <div class="launcher-character-list">
+            ${cast.map((character, index) => `
+              <div class="launcher-character-row">
+                <img src="${index % 2 ? "/assets/theme-media/gameplay-creature-cinematic.jpg" : "/assets/theme-media/hero-character-card.jpg"}" alt="">
+                <div>
+                  <strong>${gpSafe(character.name || `Unit ${index + 1}`)}</strong>
+                  <small>${gpSafe(character.role || "Playable unit")} - ability tree mapped</small>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </article>
+      </section>
+    `;
+  }
+
+  function launcherPipelineView() {
+    return `
+      <section class="launcher-builder-grid">
+        <article class="launcher-chat-panel">
+          <div class="launcher-section-head">
+            <span>Native build targets</span>
+            <button type="button">75% ready</button>
+          </div>
+          <div class="launcher-build-grid">
+            ${["Unity", "Unreal", "Flutter", "React Native", "Comic30 Runtime", "App Store QA"].map((target, index) => `
+              <div class="launcher-build-tile">
+                <strong>${gpSafe(target)}</strong>
+                <span>${index < 4 ? "Scaffold prepared" : "Pending credentials"}</span>
+              </div>
+            `).join("")}
+          </div>
+        </article>
+        <article class="launcher-preview-panel">
+          <img src="/assets/theme-media/esports-command-center.jpg" alt="">
+          <div class="launcher-preview-copy">
+            <span>Export kit</span>
+            <strong>iOS, Android, backend, store notes</strong>
+            <small>Build artifacts move through QA, rating, data safety, and deployment gates.</small>
+          </div>
+        </article>
+      </section>
+    `;
+  }
+
+  function launcherWalletView(project) {
+    return `
+      <section class="launcher-builder-grid">
+        <article class="launcher-chat-panel">
+          <div class="launcher-section-head">
+            <span>Wallet economy</span>
+            <button type="button">Demo ledger</button>
+          </div>
+          <div class="launcher-ledger">
+            <div><span>Player balance</span><strong>1,840 C30</strong></div>
+            <div><span>IAP products</span><strong>${gpSafe((project.iapProducts || []).length || 2)} mapped</strong></div>
+            <div><span>Fraud checks</span><strong>Review queue clean</strong></div>
+          </div>
+          <div class="launcher-build-grid">
+            ${["Quest reward +25 C30", "Starter pack mapped", "Daily sink balanced", "Ledger audit passed"].map((item) => `
+              <div class="launcher-build-tile"><strong>${gpSafe(item)}</strong><span>Ready for review</span></div>
+            `).join("")}
+          </div>
+        </article>
+        <article class="launcher-preview-panel">
+          <img src="/assets/theme-media/moba-gameplay-grid-b.jpg" alt="">
+          <div class="launcher-preview-copy">
+            <span>Reward loop</span>
+            <strong>Gameplay economy simulation</strong>
+            <small>Tokens, grants, IAP, sinks, and compliance gates stay tied to the game blueprint.</small>
+          </div>
+        </article>
+      </section>
+    `;
+  }
+
+  function launcherHomeView(project) {
+    return `
+      <section class="launcher-dashboard-grid">
+        <article class="launcher-hero-card">
+          <span>AI Game Creation Engine</span>
+          <h1>${gpSafe(project.title)}</h1>
+          <p>Create the story, cast, economy, terrain, and mobile build from one cinematic command center.</p>
+          <div class="launcher-actions">
+            <button type="button" data-view="agent">Open Builder</button>
+            <button type="button" data-view="studio">View Studio</button>
+          </div>
+        </article>
+        <article class="launcher-callout">
+          <span>AI copilot</span>
+          <strong>Build a playable prototype from one command.</strong>
+          <small>Story, cast, terrain, wallet economy, rigs, and export tasks.</small>
+        </article>
+        ${launcherMetric(String((project.storyArcs || []).length || 2), "Story arcs")}
+        ${launcherMetric(String((project.characters || []).length || 2), "Playable units")}
+        ${launcherMetric("1", "Terrain zone")}
+        ${launcherMetric(String((project.iapProducts || []).length || 2), "IAP products")}
+      </section>
+      ${launcherStoryFeed(project)}
+    `;
+  }
+
+  function gpPortalWorkspace(view, project) {
+    const active = view || "overview";
+    if (active === "agent") return launcherBuilderView(project);
+    if (active === "studio") return launcherStudioView(project);
+    if (active === "pipeline" || active === "tools") return launcherPipelineView(project);
+    if (active === "wallet") return launcherWalletView(project);
+    return launcherHomeView(project);
+  }
+
+  function renderAuthPage() {
+    const isLogin = state.authMode === "login";
+    return `
+      <main class="launcher-auth-page">
+        <section class="launcher-auth-showcase">
+          <div class="launcher-auth-copy">
+            <img src="/assets/brand/comic30-icon-trim.png" alt="">
+            <span>Comic30 access</span>
+            <h1>${isLogin ? "Welcome back to the builder." : "Enter the Comic30 game studio."}</h1>
+            <p>Design worlds, cast systems, wallet economies, and mobile export plans in one cinematic workspace.</p>
+          </div>
+          <div class="launcher-phone-cluster" aria-hidden="true">
+            <div class="launcher-phone-card launcher-phone-primary">
+              <img src="/assets/theme-media/hero-character-card.jpg" alt="">
+              <strong>Character Studio</strong>
+              <span>Activity - 68%</span>
+              <div><b>Faction scout</b><small>Online - tuning abilities</small></div>
+              <div><b>Boss rig</b><small>Idle - animation queued</small></div>
+            </div>
+            <div class="launcher-phone-card launcher-phone-secondary">
+              <img src="/assets/theme-media/gameplay-creature-cinematic.jpg" alt="">
+              <strong>Trending builds</strong>
+              <span>Shooter - RPG - MMO</span>
+              <div class="launcher-mini-cover"><b>Neon Rift</b><small>Playable mission generated</small></div>
+            </div>
+          </div>
+        </section>
+        <section class="launcher-auth-panel">
+          <div class="launcher-auth-tabs">
+            <button type="button" class="${!isLogin ? "is-active" : ""}" data-auth-mode="register">Create account</button>
+            <button type="button" class="${isLogin ? "is-active" : ""}" data-auth-mode="login">Sign in</button>
+          </div>
+          <form id="auth-form" class="launcher-auth-form">
+            <span>${isLogin ? "Creator login" : "Creator account"}</span>
+            <h2>${isLogin ? "Sign in to Comic30" : "Create your Comic30 account"}</h2>
+            <p>${isLogin ? "Continue building the active game project." : "Access the AI game builder and project engine."}</p>
+            ${!isLogin ? `
+              <label>Name
+                <input name="name" autocomplete="name" required>
+              </label>
+            ` : ""}
+            <label>Email
+              <input name="email" type="email" autocomplete="email" required>
+            </label>
+            <label>Password
+              <input name="password" type="password" autocomplete="${isLogin ? "current-password" : "new-password"}" required>
+            </label>
+            <div class="launcher-auth-actions">
+              <button type="submit">${isLogin ? "Sign in" : "Create account"}</button>
+              <button type="button" data-screen="home">Back to site</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  }
+
+  function renderPortal() {
+    const project = launcherProject();
+    const view = state.view || "overview";
+    const activeMeta = launcherViewMeta(view);
+    const nav = [
+      ["overview", "Game Pass"],
+      ["agent", "Builder"],
+      ["studio", "Studio"],
+      ["pipeline", "Pipeline"],
+      ["wallet", "Wallet"]
+    ];
+    return `
+      <main class="launcher-page">
+        <section class="launcher-shell">
+          <aside class="launcher-sidebar">
+            <button class="launcher-brand" type="button" data-screen="home" aria-label="Back to Comic30 website">
+              <img src="/assets/brand/comic30-icon-trim.png" alt="">
+              <span><b>Comic30</b><small>AI Game Creation Engine</small></span>
+            </button>
+            <nav class="launcher-menu" aria-label="Creator workspace">
+              ${nav.map(([key, label]) => launcherNavItem(key, label, view)).join("")}
+            </nav>
+            <div class="launcher-recents">
+              <span>Most recent</span>
+              <article>
+                <img src="/assets/theme-media/gameplay-creature-cinematic.jpg" alt="">
+                <div><strong>${gpSafe(project.title)}</strong><small>${gpSafe(project.genre || "Action RPG")}</small></div>
+              </article>
+              <article>
+                <img src="/assets/theme-media/moba-gameplay-grid-a.jpg" alt="">
+                <div><strong>Terrain Pass</strong><small>Generated today</small></div>
+              </article>
+              <article>
+                <img src="/assets/theme-media/hero-character-card.jpg" alt="">
+                <div><strong>Cast Lab</strong><small>2 units mapped</small></div>
+              </article>
+            </div>
+          </aside>
+          <section class="launcher-main">
+            <header class="launcher-windowbar">
+              <button type="button" class="launcher-back" data-screen="home" aria-label="Back to website"></button>
+              <label class="launcher-search">
+                <input type="search" placeholder="Search people, games, rigs, and builds">
+              </label>
+              <button type="button" class="launcher-avatar" data-logout aria-label="Sign out">${gpSafe((state.user?.name || "C").slice(0, 1))}</button>
+            </header>
+            <div class="launcher-content">
+              <section class="launcher-title-row">
+                <div>
+                  <h1>${gpSafe(activeMeta.title)}</h1>
+                  <p>${gpSafe(activeMeta.subtitle)}</p>
+                </div>
+                <span>${gpSafe(activeMeta.kicker)}</span>
+              </section>
+              <section class="launcher-spotlight">
+                ${launcherCard("Story Forge", "Branching story, faction pressure, and dialogue memory.", activeMeta.heroImage, "Now building")}
+                ${launcherCard("World Builder", "Terrain, objectives, enemy pressure, and reward paths.", "/assets/theme-media/gameplay-fps-arena.jpg", "Live")}
+                ${launcherCard("Mobile Export", "iOS and Android package status with store readiness.", "/assets/theme-media/moba-gameplay-grid-c.jpg", "Preview")}
+              </section>
+              ${gpPortalWorkspace(view, project)}
+            </div>
+          </section>
+        </section>
+      </main>
+    `;
+  }
+
+  function render() {
+    ["home-surface", "auth-surface", "portal-surface", "game-auth-body", "game-portal-body", "gp-auth-body", "gp-portal-body"].forEach((className) => {
+      document.body.classList.remove(className);
+    });
+
+    if (!state.user && state.screen === "auth") {
+      document.body.classList.add("gp-auth-body");
+      if (accountActions) accountActions.innerHTML = "";
+      app.innerHTML = renderAuthPage();
+      activateMotion();
+      return;
+    }
+
+    if (!state.user) {
+      document.body.classList.add("home-surface");
+      renderAccountActions();
+      app.innerHTML = renderHome();
+      activateMotion();
+      return;
+    }
+
+    document.body.classList.add("gp-portal-body");
+    if (accountActions) accountActions.innerHTML = "";
+    app.innerHTML = renderPortal();
+    activateMotion();
+  }
+
+  function c30xProject() {
+    return launcherProject();
+  }
+
+  function c30xNavButton(key, label, icon, activeView) {
+    const active = activeView === key ? " is-active" : "";
+    return `
+      <button class="c30x-nav-item${active}" type="button" data-view="${key}">
+        <span class="c30x-nav-icon">${icon}</span>
+        <span>${label}</span>
+      </button>
+    `;
+  }
+
+  function c30xMiniTile(title, meta, image) {
+    return `
+      <article class="c30x-mini-tile">
+        <img src="${image}" alt="" loading="lazy" />
+        <span>
+          <strong>${gpSafe(title)}</strong>
+          <small>${gpSafe(meta)}</small>
+        </span>
+      </article>
+    `;
+  }
+
+  function c30xSpotlight(title, eyebrow, image, copy) {
+    return `
+      <article class="c30x-spotlight-card">
+        <img src="${image}" alt="" loading="lazy" />
+        <div>
+          <small>${gpSafe(eyebrow)}</small>
+          <strong>${gpSafe(title)}</strong>
+          <span>${gpSafe(copy)}</span>
+        </div>
+      </article>
+    `;
+  }
+
+  function c30xWorkspace(view, project) {
+    if (view === "agent") {
+      return `
+        <section class="c30x-builder-grid">
+          <article class="c30x-panel c30x-chat-panel">
+            <div class="c30x-panel-head">
+              <span>AI Copilot</span>
+              <strong>Live</strong>
+            </div>
+            <div class="c30x-chat-log">
+              <p><b>Comic30 Agent</b> Tell me the genre, world, characters, reward loop, and target device. I will turn it into a playable build plan.</p>
+              <p><b>You</b> Build a cinematic action RPG called ${gpSafe(project.title)} with branching companions and wallet rewards.</p>
+              <p><b>Comic30 Agent</b> Story graph, cast motives, terrain zones, economy sinks, and mobile export tasks are queued.</p>
+            </div>
+            <form class="c30x-chat-composer" data-agent-chat>
+              <input name="prompt" placeholder="Ask the agent to build a game..." autocomplete="off" />
+              <button type="submit">Send</button>
+            </form>
+          </article>
+          <article class="c30x-panel c30x-preview-panel">
+            <img src="/assets/theme-media/gameplay-fps-arena.jpg" alt="" loading="lazy" />
+            <div class="c30x-panel-overlay">
+              <span>Prototype Preview</span>
+              <strong>Playable loop generated</strong>
+            </div>
+          </article>
+          <article class="c30x-panel">
+            <div class="c30x-panel-head"><span>Cast</span><strong>${project.characters.length}</strong></div>
+            ${project.characters.map((character) => `<p class="c30x-list-line">${gpSafe(character.name)} <small>${gpSafe(character.role)}</small></p>`).join("")}
+          </article>
+          <article class="c30x-panel">
+            <div class="c30x-panel-head"><span>World</span><strong>${project.terrain.length}</strong></div>
+            ${project.terrain.map((zone) => `<p class="c30x-list-line">${gpSafe(zone.name)} <small>${gpSafe(zone.biome)}</small></p>`).join("")}
+          </article>
+        </section>
+      `;
+    }
+
+    if (view === "studio") {
+      return `
+        <section class="c30x-content-row">
+          <article class="c30x-panel c30x-wide-card">
+            <img src="/assets/theme-media/hero-character-card.jpg" alt="" loading="lazy" />
+            <div>
+              <small>Character Studio</small>
+              <h2>Playable cast, rigs, motives.</h2>
+              <p>Companions, rivals, ability kits, dialogue memory, and animation notes are assembled into one production-ready cast system.</p>
+            </div>
+          </article>
+          <article class="c30x-panel">
+            <div class="c30x-panel-head"><span>Rig Queue</span><strong>2 units</strong></div>
+            <p class="c30x-list-line">Companion rig mapped <small>ready</small></p>
+            <p class="c30x-list-line">Boss ability tree <small>compiled</small></p>
+            <p class="c30x-list-line">Dialogue memory <small>seeded</small></p>
+          </article>
+        </section>
+      `;
+    }
+
+    if (view === "pipeline") {
+      return `
+        <section class="c30x-pipeline">
+          ${["Brief", "Story Graph", "Playable Cast", "World + Terrain", "Wallet Economy", "Package Builds", "Deploy + Operate"].map((step, index) => `
+            <article class="c30x-step-card">
+              <small>${String(index + 1).padStart(2, "0")}</small>
+              <strong>${step}</strong>
+              <span>${index < 4 ? "Ready" : index === 4 ? "Testing" : "Queued"}</span>
+            </article>
+          `).join("")}
+        </section>
+      `;
+    }
+
+    if (view === "wallet") {
+      return `
+        <section class="c30x-wallet-grid">
+          <article class="c30x-panel c30x-wallet-hero">
+            <small>Wallet Economy</small>
+            <h2>Rewards without breaking the game loop.</h2>
+            <p>Model credits, item grants, IAP products, sinks, ledger events, fraud checks, and regional compliance gates before launch.</p>
+          </article>
+          <article class="c30x-panel">
+            <div class="c30x-panel-head"><span>Player Balance</span><strong>1,840 C30</strong></div>
+            <p class="c30x-list-line">Quest reward <small>+25 C30</small></p>
+            <p class="c30x-list-line">Starter pack <small>$4.99 mapped</small></p>
+            <p class="c30x-list-line">Ledger audit <small>passed</small></p>
+          </article>
+          <article class="c30x-panel">
+            <div class="c30x-panel-head"><span>IAP Store</span><strong>2 products</strong></div>
+            <p class="c30x-list-line">Starter Credit Pack <small>500 C30</small></p>
+            <p class="c30x-list-line">Battle Pass Grant <small>seasonal</small></p>
+          </article>
+        </section>
+      `;
+    }
+
+    return `
+      <section class="c30x-dashboard">
+        <article class="c30x-hero-panel">
+          <div>
+            <small>AI Game Creation Engine</small>
+            <h1>${gpSafe(project.title)}</h1>
+            <p>Create story worlds, playable casts, terrain, wallet economies, and mobile build kits from one command center.</p>
+            <div class="c30x-pill-actions">
+              <button type="button" data-view="agent">Open Game Builder</button>
+              <button type="button" data-view="pipeline">View Pipeline</button>
+            </div>
+          </div>
+        </article>
+        <div class="c30x-stat-grid">
+          <article><strong>2</strong><span>Story arcs</span></article>
+          <article><strong>2</strong><span>Playable units</span></article>
+          <article><strong>1</strong><span>Terrain zone</span></article>
+          <article><strong>75%</strong><span>Launch readiness</span></article>
+        </div>
+        <section class="c30x-spotlight-row">
+          ${c30xSpotlight("Opening Signal", "Story Arc", "/assets/theme-media/gameplay-creature-cinematic.jpg", "A rebel creator discovers player choices rewrite alliances.")}
+          ${c30xSpotlight("Reward Route", "Economy", "/assets/theme-media/moba-gameplay-grid-a.jpg", "Token rewards and IAP products are mapped to progression.")}
+          ${c30xSpotlight("World Pass", "Terrain", "/assets/theme-media/moba-gameplay-grid-c.jpg", "Biome lighting, enemy pressure, and session pacing are staged.")}
+        </section>
+      </section>
+    `;
+  }
+
+  function renderAuthPage() {
+    const isLogin = state.authMode === "login";
+    return `
+      <main class="c30x-auth">
+        <section class="c30x-auth-stage">
+          <div class="c30x-phone-scene">
+            <div class="c30x-phone c30x-phone-a">
+              <div class="c30x-phone-orb"></div>
+              <strong>Neon Rift</strong>
+              <span>Activity 53%</span>
+              <p>Agent-ready story graph</p>
+              <p>2 playable allies online</p>
+            </div>
+            <div class="c30x-phone c30x-phone-b">
+              <div class="c30x-search-pill">Search projects</div>
+              <h2>Trend</h2>
+              <div class="c30x-floating-card">Destiny Build</div>
+              <div class="c30x-floating-card c30x-floating-card-alt">Squad Economy</div>
+            </div>
+          </div>
+          <aside class="c30x-auth-copy">
+            <small>Creator Workspace</small>
+            <h1>Build games with an AI copilot.</h1>
+            <p>Open the Comic30 creation deck to generate story, cast, terrain, rewards, rigs, and export tasks.</p>
+          </aside>
+          <form class="c30x-auth-card" id="auth-form">
+            <div class="c30x-auth-tabs">
+              <button type="button" class="${!isLogin ? "is-active" : ""}" data-auth-mode="register">Create</button>
+              <button type="button" class="${isLogin ? "is-active" : ""}" data-auth-mode="login">Sign in</button>
+            </div>
+            <h2>${isLogin ? "Welcome back" : "Create your Comic30 account"}</h2>
+            <p>${isLogin ? "Return to your active game project." : "Access the creator workspace and AI project engine."}</p>
+            ${!isLogin ? '<label>Name<input name="name" autocomplete="name" required /></label>' : ""}
+            <label>Email<input name="email" type="email" autocomplete="email" required /></label>
+            <label>Password<input name="password" type="password" autocomplete="${isLogin ? "current-password" : "new-password"}" required /></label>
+            <div class="c30x-auth-actions">
+              <button type="submit">${isLogin ? "Sign in" : "Create account"}</button>
+              <button type="button" data-screen="home">Back to site</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  }
+
+  function renderPortal() {
+    const project = c30xProject();
+    const view = ["overview", "agent", "studio", "pipeline", "wallet"].includes(state.view) ? state.view : "overview";
+    const nav = [
+      ["overview", "Game Pass", "⌂"],
+      ["agent", "Builder", "✦"],
+      ["studio", "Studio", "◌"],
+      ["pipeline", "Pipeline", "▤"],
+      ["wallet", "Wallet", "◎"]
+    ];
+
+    return `
+      <main class="c30x-portal">
+        <section class="c30x-app-window">
+          <aside class="c30x-rail">
+            <div class="c30x-profile">
+              <img src="/assets/brand/comic30-icon-trim.png" alt="" />
+              <span>
+                <strong>${gpSafe(state.user.name || "Creator")}</strong>
+                <small>${gpSafe(state.user.email || "creator@comic30.com")}</small>
+              </span>
+            </div>
+            <nav class="c30x-nav">
+              ${nav.map(([key, label, icon]) => c30xNavButton(key, label, icon, view)).join("")}
+            </nav>
+            <div class="c30x-recent">
+              <small>Recent Builds</small>
+              ${c30xMiniTile("Neon Rift", "Edited today", "/assets/theme-media/gameplay-creature-cinematic.jpg")}
+              ${c30xMiniTile("Starfall Run", "Prototype", "/assets/theme-media/gameplay-fps-arena.jpg")}
+              ${c30xMiniTile("Grid Quest", "Economy test", "/assets/theme-media/moba-gameplay-grid-a.jpg")}
+            </div>
+          </aside>
+          <section class="c30x-workspace">
+            <header class="c30x-windowbar">
+              <button class="c30x-icon-button" type="button" data-view="overview">C30</button>
+              <label class="c30x-top-search">
+                <span>Search</span>
+                <input placeholder="Search people, games, builds, rigs..." />
+              </label>
+              <div class="c30x-window-controls">
+                <span></span><span></span><span></span>
+              </div>
+            </header>
+            ${xgpFunctionalWorkspace(view, project)}
+          </section>
+        </section>
+      </main>
+    `;
+  }
+
+  function xgpSafe(value) {
+    return gpSafe(value || "");
+  }
+
+  function xgpProject() {
+    const project = currentProject();
+    if (!project) return { title: "No active project", genre: "Create a project to begin", design: {}, story: [], characters: [], worlds: [], terrain: [], builds: [], buildJobs: [], deployments: [], analytics: {}, lifecycle: {} };
+    project.premise = project.design?.premise || "Add a premise in Builder.";
+    project.artStyle = project.design?.artStyle || "Unset";
+    return project;
+  }
+
+  function renderAccountActions() {
+    if (state.user) {
+      return `
+        <div class="xgp-account">
+          <span>${xgpSafe(state.user.name || "Creator")}</span>
+          <button type="button" class="xgp-account-button" data-logout>Sign out</button>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="xgp-account">
+        <button type="button" class="xgp-account-link" data-auth-mode="login" data-screen="auth">Sign in</button>
+        <button type="button" class="xgp-account-button" data-auth-mode="register" data-screen="auth">Create account</button>
+      </div>
+    `;
+  }
+
+  function renderAuthPage() {
+    const isLogin = state.authMode === "login";
+    return `
+      <main class="xgp-auth">
+        <section class="xgp-auth-glow" aria-hidden="true"></section>
+        <section class="xgp-auth-shell">
+          <div class="xgp-mobile-stack" aria-hidden="true">
+            <article class="xgp-phone xgp-phone-left">
+              <div class="xgp-phone-top">
+                <span></span>
+                <strong>C30</strong>
+                <span></span>
+              </div>
+              <div class="xgp-avatar-orbit">
+                <img src="/assets/theme-media/hero-character-card.jpg" alt="" />
+              </div>
+              <h2>Neon Rift</h2>
+              <p>Agent activity 53%</p>
+              <div class="xgp-friend-row"><span></span><strong>VRTU_39</strong><small>Online</small></div>
+              <div class="xgp-friend-row"><span></span><strong>Beautifulboy</strong><small>Offline</small></div>
+            </article>
+            <article class="xgp-phone xgp-phone-right">
+              <div class="xgp-phone-search">Search</div>
+              <h2>Trend</h2>
+              <div class="xgp-chip-row"><span>Shooter</span><span>MMO</span><span>RPG</span></div>
+              <div class="xgp-float-game xgp-game-one">
+                <img src="/assets/theme-media/gameplay-fps-arena.jpg" alt="" />
+                <strong>Destiny Build</strong>
+                <button type="button">Get now</button>
+              </div>
+              <div class="xgp-float-game xgp-game-two">
+                <img src="/assets/theme-media/moba-gameplay-grid-b.jpg" alt="" />
+                <strong>Squad Economy</strong>
+                <button type="button">Get now</button>
+              </div>
+            </article>
+          </div>
+
+          <form class="xgp-auth-card" id="auth-form">
+            <img class="xgp-auth-logo" src="/assets/brand/comic30-icon-trim.png" alt="Comic30" />
+            <div class="xgp-auth-tabs">
+              <button type="button" class="${isLogin ? "" : "is-active"}" data-auth-mode="register">Create account</button>
+              <button type="button" class="${isLogin ? "is-active" : ""}" data-auth-mode="login">Sign in</button>
+            </div>
+            <h1>${isLogin ? "Welcome back" : "Create your Comic30 account"}</h1>
+            <p>${isLogin ? "Return to the AI game creation workspace." : "Open the creator workspace, agent chat, project preview, rigs, terrain, wallet, and build queue."}</p>
+            ${!isLogin ? '<label>Name<input name="name" autocomplete="name" required /></label>' : ""}
+            <label>Email<input name="email" type="email" autocomplete="email" required /></label>
+            <label>Password<input name="password" type="password" autocomplete="${isLogin ? "current-password" : "new-password"}" required /></label>
+            <div class="xgp-auth-actions">
+              <button type="submit">${isLogin ? "Sign in" : "Create account"}</button>
+              <button type="button" data-screen="home">Back to site</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  }
+
+  function xgpRailButton(key, label, icon, activeView) {
+    const active = activeView === key ? "is-active" : "";
+    return `
+      <button type="button" class="xgp-rail-item ${active}" data-view="${key}">
+        <span>${icon}</span>
+        <strong>${label}</strong>
+      </button>
+    `;
+  }
+
+  function xgpLibraryItem(title, meta, image) {
+    return `
+      <button type="button" class="xgp-library-item" data-view="overview">
+        <img src="${image}" alt="" loading="lazy" />
+        <span><strong>${title}</strong><small>${meta}</small></span>
+      </button>
+    `;
+  }
+
+  function xgpHeroCard(title, kicker, image, view) {
+    return `
+      <button type="button" class="xgp-hero-card" data-view="${view}">
+        <img src="${image}" alt="" loading="lazy" />
+        <span><strong>${title}</strong><small>${kicker}</small></span>
+      </button>
+    `;
+  }
+
+  function xgpFeatureCard(title, kicker, image, text, view) {
+    return `
+      <button type="button" class="xgp-feature-card" data-view="${view}">
+        <img src="${image}" alt="" loading="lazy" />
+        <span>
+          <small>${kicker}</small>
+          <strong>${title}</strong>
+          <em>${text}</em>
+        </span>
+      </button>
+    `;
+  }
+
+  function xgpStat(value, label) {
+    return `<article class="xgp-stat"><strong>${value}</strong><span>${label}</span></article>`;
+  }
+
+  function c30xWorkspace(view, projectData) {
+    const project = projectData || xgpProject();
+
+    if (view === "agent") {
+      return `
+        <section class="xgp-view xgp-builder-view">
+          <div class="xgp-section-heading">
+            <small>AI Copilot</small>
+            <h1>Build a playable prototype from one command.</h1>
+          </div>
+          <div class="xgp-builder-grid">
+            <article class="xgp-agent-panel">
+              <div class="xgp-chat-log">
+                <p><strong>Comic30 Agent</strong><span>Tell me the genre, world, camera style, player abilities, and target platform. I will generate story arcs, cast, terrain, economy, and build tasks.</span></p>
+                <p><strong>You</strong><span>Create a cinematic mobile RPG in a neon space colony with squad combat and wallet rewards.</span></p>
+                <p><strong>Comic30 Agent</strong><span>Blueprint ready: two story arcs, two playable units, one terrain zone, two IAP products, and mobile export gates.</span></p>
+              </div>
+              <form class="xgp-agent-compose" data-agent-form>
+                <textarea id="agent-prompt" name="prompt" placeholder="Ask Comic30 to create a game, revise a character, generate terrain, tune rewards, or prepare an iOS / Android build."></textarea>
+                <button type="submit">Generate</button>
+              </form>
+            </article>
+            <aside class="xgp-live-preview">
+              <img src="/assets/theme-media/gameplay-creature-cinematic.jpg" alt="" loading="lazy" />
+              <div>
+                <small>Live Project Preview</small>
+                <h2>${xgpSafe(project.title)}</h2>
+                <p>${xgpSafe(project.premise)}</p>
+              </div>
+            </aside>
+          </div>
+        </section>
+      `;
+    }
+
+    if (view === "studio") {
+      return `
+        <section class="xgp-view">
+          <div class="xgp-section-heading">
+            <small>Character Studio</small>
+            <h1>Playable cast, rigs, motives.</h1>
+          </div>
+          <div class="xgp-card-row">
+            ${xgpFeatureCard("Ally Vanguard", "Playable unit", "/assets/theme-media/hero-character-card.jpg", "Dialogue memory, loyalty states, and ability tree.", "studio")}
+            ${xgpFeatureCard("Rift Warden", "Boss rig", "/assets/theme-media/gameplay-creature-cinematic.jpg", "Threat states, combat beats, and cinematic intro.", "studio")}
+            ${xgpFeatureCard("Faction Runner", "NPC system", "/assets/theme-media/moba-gameplay-grid-b.jpg", "Quest pressure, reward triggers, and relationship memory.", "studio")}
+          </div>
+        </section>
+      `;
+    }
+
+    if (view === "pipeline") {
+      return `
+        <section class="xgp-view">
+          <div class="xgp-section-heading">
+            <small>Build Pipeline</small>
+            <h1>Package, QA, and deploy.</h1>
+          </div>
+          <div class="xgp-pipeline-strip">
+            ${["Brief", "Story Graph", "Playable Cast", "World + Terrain", "Wallet Economy", "Package Builds", "Deploy + Operate"].map((step, index) => `
+              <article class="xgp-pipeline-step">
+                <span>${String(index + 1).padStart(2, "0")}</span>
+                <strong>${step}</strong>
+                <small>${index < 4 ? "Ready" : index === 4 ? "Testing" : "Queued"}</small>
+              </article>
+            `).join("")}
+          </div>
+          <div class="xgp-card-row">
+            ${xgpFeatureCard("Unity / Unreal", "Native build target", "/assets/theme-media/gameplay-fps-arena.jpg", "Engine export adapters and QA gates.", "pipeline")}
+            ${xgpFeatureCard("Flutter / React Native", "Mobile shell", "/assets/theme-media/moba-gameplay-grid-a.jpg", "App-shell tasks, store notes, and IAP metadata.", "pipeline")}
+            ${xgpFeatureCard("Comic30 Runtime", "Custom runtime", "/assets/theme-media/moba-gameplay-grid-c.jpg", "Blueprint-driven gameplay and economy hooks.", "pipeline")}
+          </div>
+        </section>
+      `;
+    }
+
+    if (view === "wallet") {
+      return `
+        <section class="xgp-view">
+          <div class="xgp-section-heading">
+            <small>Wallet Economy</small>
+            <h1>Rewards, purchases, and fraud controls.</h1>
+          </div>
+          <div class="xgp-builder-grid">
+            <article class="xgp-panel-soft">
+              <h2>Player Balance</h2>
+              <strong>1,840 C30</strong>
+              <p>Quest rewards, starter packs, grant events, sinks, and ledger audit controls.</p>
+              <div class="xgp-list">
+                <span>Quest reward +25 C30</span>
+                <span>Starter pack $4.99 mapped</span>
+                <span>Daily sink pressure balanced</span>
+                <span>Ledger audit passed</span>
+              </div>
+            </article>
+            <article class="xgp-panel-soft">
+              <h2>IAP Products</h2>
+              <strong>2 products</strong>
+              <p>Apple and Google product metadata staged for review workflows.</p>
+              <div class="xgp-list">
+                <span>Starter credit pack</span>
+                <span>Season battle pass</span>
+                <span>Refund rules pending compliance review</span>
+              </div>
+            </article>
+          </div>
+        </section>
+      `;
+    }
+
+    return `
+      <section class="xgp-view xgp-home-view">
+        <div class="xgp-section-heading">
+          <small>Game Builder</small>
+          <h1>What’s happening</h1>
+        </div>
+        <div class="xgp-hero-row">
+          ${xgpHeroCard("Open Game Builder", "Create the next playable pass", "/assets/theme-media/gameplay-creature-cinematic.jpg", "agent")}
+          ${xgpHeroCard("Character Studio", "Cast, rigs, dialogue memory", "/assets/theme-media/hero-character-card.jpg", "studio")}
+          ${xgpHeroCard("World + Terrain", "Biome logic and enemy pressure", "/assets/theme-media/gameplay-fps-arena.jpg", "pipeline")}
+        </div>
+        <div class="xgp-plans">
+          <button type="button" data-view="agent">Game Builder</button>
+          <button type="button" data-view="pipeline">Pipeline</button>
+          <button type="button" data-view="wallet">Wallet</button>
+        </div>
+        <section class="xgp-franchise">
+          <div>
+            <small>Play the project</small>
+            <h2>${xgpSafe(project.title)}</h2>
+            <p>${xgpSafe(project.premise)}</p>
+          </div>
+          <div class="xgp-franchise-cards">
+            ${xgpFeatureCard("Opening Signal", "Story Arc", "/assets/theme-media/gameplay-creature-cinematic.jpg", "A rebel creator discovers the city is alive.", "agent")}
+            ${xgpFeatureCard("Reward Route", "Economy", "/assets/theme-media/moba-gameplay-grid-a.jpg", "Token rewards and IAP products map to progression.", "wallet")}
+            ${xgpFeatureCard("World Pass", "Terrain", "/assets/theme-media/moba-gameplay-grid-c.jpg", "Lighting, enemies, and session pacing are staged.", "pipeline")}
+          </div>
+        </section>
+      </section>
+    `;
+  }
+
+  function renderPortal() {
+    const project = xgpProject();
+    const view = ["overview", "agent", "studio", "pipeline", "wallet"].includes(state.view) ? state.view : "overview";
+    const nav = [
+      ["overview", "Game Pass", "⌂"],
+      ["agent", "Builder", "✦"],
+      ["studio", "Studio", "◌"],
+      ["pipeline", "Pipeline", "▦"],
+      ["wallet", "Wallet", "◉"]
+    ];
+
+    return `
+      <main class="xgp-portal">
+        <section class="xgp-device">
+          <aside class="xgp-sidebar">
+            <div class="xgp-side-profile">
+              <img src="/assets/brand/comic30-icon-trim.png" alt="" />
+              <span>
+                <strong>${xgpSafe(state.user.name || "Comic30 Creator")}</strong>
+                <small>${xgpSafe(state.user.email || "creator@comic30.com")}</small>
+              </span>
+            </div>
+            <nav class="xgp-main-nav">
+              ${nav.map(([key, label, icon]) => xgpRailButton(key, label, icon, view)).join("")}
+            </nav>
+            <div class="xgp-recent-library">
+              <label>Most Recent</label>
+              ${xgpLibraryItem("Neon Rift", "Active project", "/assets/theme-media/gameplay-creature-cinematic.jpg")}
+              ${xgpLibraryItem("Starfall Run", "Prototype", "/assets/theme-media/gameplay-fps-arena.jpg")}
+              ${xgpLibraryItem("Grid Quest", "Economy test", "/assets/theme-media/moba-gameplay-grid-a.jpg")}
+              ${xgpLibraryItem("Rift Arena", "Terrain pass", "/assets/theme-media/moba-gameplay-grid-c.jpg")}
+            </div>
+          </aside>
+          <section class="xgp-screen">
+            <header class="xgp-topbar">
+              <button type="button" class="xgp-back" data-view="overview" aria-label="Back">‹</button>
+              <label class="xgp-search">
+                <span>⌕</span>
+                <input placeholder="Search projects, builds, rigs, and people" />
+              </label>
+              <div class="xgp-controls" aria-hidden="true"><span></span><span></span><span></span></div>
+            </header>
+            ${xgpFunctionalWorkspace(view, project)}
+            <div class="xgp-friends">Friends <small>4 online</small></div>
+          </section>
+        </section>
+      </main>
+    `;
+  }
+
+  render();
 })();
