@@ -1654,7 +1654,8 @@ async function handleApi(req, res, url) {
 
   const mediaPath = url.searchParams.get("media");
   if (req.method === "GET" && mediaPath) {
-    const cleanMediaPath = mediaPath
+    const rootedMediaPath = mediaPath.startsWith("assets/") ? mediaPath : `assets/${mediaPath}`;
+    const cleanMediaPath = rootedMediaPath
       .split("/")
       .filter((segment) => segment && segment !== "." && segment !== "..")
       .map(encodeURIComponent)
