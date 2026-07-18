@@ -1640,7 +1640,10 @@ async function handleApi(req, res, url) {
       `${SUPABASE_URL}/storage/v1/object/upload/sign/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}/${cleanMediaPath}`,
       { method: "POST", headers: { ...serviceHeaders, "x-upsert": "true" }, body: JSON.stringify({}) }
     );
-    if (!ticketResponse.ok) return json(res, 502, { error: `Upload ticket failed (${ticketResponse.status}).` });
+    if (!ticketResponse.ok) {
+      const detail = (await ticketResponse.text()).slice(0, 500);
+      return json(res, 502, { error: `Upload ticket failed (${ticketResponse.status}).`, detail });
+    }
     const ticket = await ticketResponse.json();
     return json(res, 200, {
       ...ticket,
