@@ -342,7 +342,7 @@
     return `
       <section class="parallax-hero" id="experience" data-parallax-scene>
         <video class="scene-video hero-autoplay-video" autoplay muted loop playsinline preload="auto">
-          <source src="/assets/videos/user/space-game-hero.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/space-game-hero.mp4" type="video/mp4">
         </video>
         <div class="scene-shade"></div>
         <div class="depth-layer depth-stars" aria-hidden="true"></div>
@@ -384,29 +384,29 @@
 
       <section class="parallax-scene scene-world" id="engine" data-parallax-scene>
         <video class="scene-video" muted loop playsinline preload="metadata">
-          <source src="/assets/videos/user/space-game-world.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/space-game-world.mp4" type="video/mp4">
         </video>
         <video class="scene-video-secondary terrain-backdrop-video" muted loop playsinline preload="metadata">
-          <source src="/assets/videos/user/space-game-battle.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/space-game-battle.mp4" type="video/mp4">
         </video>
         <div class="scene-shade"></div>
         <div class="motion-overlay world-video-panel" aria-hidden="true">
           <video muted loop playsinline preload="metadata">
-            <source src="/assets/videos/user/space-game-terrain.mp4" type="video/mp4">
+            <source src="/api/media?media=videos/user/space-game-terrain.mp4" type="video/mp4">
           </video>
           <span>Realtime world pass</span>
           <div class="overlay-hud-lines"><i></i><i></i><i></i></div>
         </div>
         <div class="motion-overlay world-secondary-panel" aria-hidden="true">
           <video muted loop playsinline preload="metadata">
-            <source src="/assets/videos/user/robot-run-candidate-a.mp4" type="video/mp4">
+            <source src="/api/media?media=videos/user/robot-run-candidate-a.mp4" type="video/mp4">
           </video>
           <span>Robot run sim</span>
           <div class="overlay-hud-lines"><i></i><i></i><i></i></div>
         </div>
         <div class="model-scene world-model-scene" aria-label="Generated game world with imported space station and aircraft assets">
-          <model-viewer class="scene-model world-station-model" src="/assets/models/generated/space-station-scene.glb" alt="Generated space station environment" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.22" shadow-intensity="0.85" camera-orbit="-28deg 68deg 11m" field-of-view="48deg" loading="lazy"></model-viewer>
-          <model-viewer class="scene-model world-aircraft-model" src="/assets/models/generated/e45-aircraft-clean.glb" alt="E-45 aircraft game asset" autoplay animation-name="Armature|Action" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.35" shadow-intensity="0.85" camera-orbit="36deg 72deg 58m" field-of-view="62deg" scale="0.08 0.08 0.08" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model world-station-model" src="/api/media?media=models/generated/space-station-scene.glb" alt="Generated space station environment" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.22" shadow-intensity="0.85" camera-orbit="-28deg 68deg 11m" field-of-view="48deg" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model world-aircraft-model" src="/api/media?media=models/generated/e45-aircraft-clean.glb" alt="E-45 aircraft game asset" autoplay animation-name="Armature|Action" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.35" shadow-intensity="0.85" camera-orbit="36deg 72deg 58m" field-of-view="62deg" scale="0.08 0.08 0.08" loading="lazy"></model-viewer>
           <div class="scene-model-hud world-model-hud">
             <span>World asset import</span>
             <strong>Station scene + aircraft rig</strong>
@@ -430,14 +430,14 @@
 
       <section class="parallax-scene scene-role" data-parallax-scene>
         <video class="scene-video" muted loop playsinline preload="metadata">
-          <source src="/assets/videos/user/robot-section-background.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/robot-section-background.mp4" type="video/mp4">
         </video>
         <div class="scene-shade scene-shade-warm"></div>
         <div class="model-scene role-model-scene" aria-label="Generated cast scene with animated mech walker and character rig">
           <div class="branch-graph scene-branch-graph">
             <i></i><i></i><i></i><i></i><i></i>
           </div>
-          <model-viewer class="scene-model neck-mech-model" src="/assets/models/generated/neck-mech-walker.glb" alt="Animated neck mech walker boss rig" autoplay animation-name="Neck_Mech_Rig|Idel" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.12" shadow-intensity="1" camera-orbit="24deg 70deg 94m" field-of-view="45deg" scale="0.18 0.18 0.18" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model neck-mech-model" src="/api/media?media=models/generated/neck-mech-walker.glb" alt="Animated neck mech walker boss rig" autoplay animation-name="Neck_Mech_Rig|Idel" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.12" shadow-intensity="1" camera-orbit="24deg 70deg 94m" field-of-view="45deg" scale="0.18 0.18 0.18" loading="lazy"></model-viewer>
           <div class="scene-model-hud role-model-hud">
             <span>Branching logic live</span>
             <strong>Mech boss rig</strong>
@@ -460,11 +460,11 @@
 
       <section class="parallax-scene scene-economy" data-parallax-scene>
         <video class="scene-video" muted loop playsinline preload="metadata">
-          <source src="/assets/videos/user/space-game-battle.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/space-game-battle.mp4" type="video/mp4">
         </video>
         <div class="scene-shade"></div>
         <div class="model-scene economy-model-scene" aria-label="Generated transport shuttle reward economy game scene">
-          <model-viewer class="scene-model shuttle-model-viewer" src="/assets/models/generated/transport-shuttle.glb" alt="Rigged futuristic transport shuttle" autoplay animation-name="Armature|Shuttel_Fly_Animation" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.25" shadow-intensity="0.85" camera-orbit="-32deg 68deg 78m" field-of-view="46deg" scale="0.16 0.16 0.16" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model shuttle-model-viewer" src="/api/media?media=models/generated/transport-shuttle.glb" alt="Rigged futuristic transport shuttle" autoplay animation-name="Armature|Shuttel_Fly_Animation" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.25" shadow-intensity="0.85" camera-orbit="-32deg 68deg 78m" field-of-view="46deg" scale="0.16 0.16 0.16" loading="lazy"></model-viewer>
           <div class="shuttle-path"><i></i><i></i><i></i></div>
           <div class="economy-store-hud">
             <b>Asset Forge</b>
@@ -515,11 +515,11 @@
 
       <section class="parallax-scene scene-export" data-parallax-scene>
         <video class="scene-video" muted loop playsinline preload="metadata">
-          <source src="/assets/videos/user/space-game-launch.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/space-game-launch.mp4" type="video/mp4">
         </video>
         <div class="scene-shade scene-shade-deep"></div>
         <div class="model-scene export-model-scene" aria-label="Generated mobile deployment game asset scene">
-          <model-viewer class="scene-model five-wheeler-model" src="/assets/models/generated/five-wheeler.glb" alt="Animated futuristic five-wheeler deployment asset" autoplay animation-name="Five Wheeler|Idel" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.2" shadow-intensity="1" camera-orbit="32deg 70deg 116m" field-of-view="45deg" scale="0.14 0.14 0.14" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model five-wheeler-model" src="/api/media?media=models/generated/five-wheeler.glb" alt="Animated futuristic five-wheeler deployment asset" autoplay animation-name="Five Wheeler|Idel" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.2" shadow-intensity="1" camera-orbit="32deg 70deg 116m" field-of-view="45deg" scale="0.14 0.14 0.14" loading="lazy"></model-viewer>
           <div class="scene-model-hud export-model-hud">
             <span>Audience deploy preview</span>
             <strong>Playable asset packaged</strong>
@@ -559,7 +559,7 @@
 
       <section class="parallax-scene scene-start" id="studio" data-parallax-scene>
         <video class="scene-video" muted loop playsinline preload="metadata">
-          <source src="/assets/videos/user/robot-branching-logic.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/robot-branching-logic.mp4" type="video/mp4">
         </video>
         <div class="scene-shade scene-shade-start"></div>
         <div class="start-copy">
@@ -600,10 +600,10 @@
     return `
       <section class="auth-wrap auth-cinematic" data-parallax-scene>
         <video class="scene-video auth-backdrop-video" autoplay muted loop playsinline preload="auto">
-          <source src="/assets/videos/user/space-game-portal.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/space-game-portal.mp4" type="video/mp4">
         </video>
         <video class="scene-video-secondary" muted loop playsinline preload="metadata">
-          <source src="/assets/videos/user/space-game-launch.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/space-game-launch.mp4" type="video/mp4">
         </video>
         <div class="scene-shade scene-shade-deep"></div>
         <div class="auth-copy">
@@ -682,7 +682,7 @@
     return `
       <section class="portal-shell c30-console-shell">
         <video class="portal-backdrop-video" autoplay muted loop playsinline preload="auto">
-          <source src="/assets/videos/user/space-game-portal.mp4" type="video/mp4">
+          <source src="/api/media?media=videos/user/space-game-portal.mp4" type="video/mp4">
         </video>
         <div class="portal-backdrop-shade" aria-hidden="true"></div>
         <div class="c30-console">
@@ -771,7 +771,7 @@
           </div>
           <div class="c30-hero-media">
             <video autoplay muted loop playsinline preload="metadata">
-              <source src="/assets/videos/user/space-game-portal.mp4" type="video/mp4">
+              <source src="/api/media?media=videos/user/space-game-portal.mp4" type="video/mp4">
             </video>
             <div>
               <strong>${escapeHtml(heroArc ? heroArc.title : "Game Builder Agent")}</strong>
@@ -1824,11 +1824,11 @@
   }
 
   const gamePassMedia = {
-    hero: "assets/videos/user/space-game-hero.mp4",
-    world: "assets/videos/user/space-game-world.mp4",
-    story: "assets/videos/user/space-game-character.mp4",
-    economy: "assets/videos/user/mobile-gameplay-rewards.mp4",
-    launch: "assets/videos/user/mobile-gameplay-export.mp4"
+    hero: "/api/media?media=videos/user/space-game-hero.mp4",
+    world: "/api/media?media=videos/user/space-game-world.mp4",
+    story: "/api/media?media=videos/user/space-game-character.mp4",
+    economy: "/api/media?media=videos/user/mobile-gameplay-rewards.mp4",
+    launch: "/api/media?media=videos/user/mobile-gameplay-export.mp4"
   };
 
   function gameVideo(src, className = "") {
