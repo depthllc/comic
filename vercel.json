@@ -5,7 +5,6 @@
     { "src": "public/**", "use": "@vercel/static" }
   ],
   "routes": [
-    { "src": "/assets/(videos|models)/(.*)", "dest": "/api/index.js?media=$1/$2" },
     { "src": "/api/(.*)", "dest": "/api/index.js" },
     { "src": "/privacy-policy", "dest": "/public/privacy-policy.html" },
     { "src": "/terms-of-use", "dest": "/public/terms-of-use.html" },

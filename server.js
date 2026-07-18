@@ -1598,60 +1598,6 @@ async function createMobileBuildJob(project, target = "all") {
 }
 
 async function handleApi(req, res, url) {
-  if (req.method === "POST" && url.pathname === "/api/media/upload-ticket") {
-    const expectedToken = String(process.env.MEDIA_UPLOAD_TOKEN || "");
-    const suppliedToken = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-    if (!expectedToken || suppliedToken !== expectedToken || !hasSupabase()) {
-      return json(res, 404, { error: "Upload channel is unavailable." });
-    }
-    const body = await readBody(req);
-    const mediaPath = String(body.path || "");
-    const cleanMediaPath = mediaPath
-      .split("/")
-      .filter((segment) => segment && segment !== "." && segment !== "..")
-      .map(encodeURIComponent)
-      .join("/");
-    if (!cleanMediaPath || !/^(assets%2F|assets\/)?(?:models|videos)\//.test(cleanMediaPath.replace(/%2F/gi, "/"))) {
-      return json(res, 400, { error: "Invalid media path." });
-    }
-    const serviceHeaders = {
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      "Content-Type": "application/json"
-    };
-    const bucketResponse = await fetch(`${SUPABASE_URL}/storage/v1/bucket/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}`, {
-      headers: serviceHeaders
-    });
-    if (!bucketResponse.ok) {
-      const createResponse = await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
-        method: "POST",
-        headers: serviceHeaders,
-        body: JSON.stringify({
-          id: SUPABASE_MEDIA_BUCKET,
-          name: SUPABASE_MEDIA_BUCKET,
-          public: true,
-          file_size_limit: 52428800,
-          allowed_mime_types: ["video/mp4", "video/webm", "model/gltf-binary"]
-        })
-      });
-      if (!createResponse.ok) return json(res, 502, { error: `Media bucket creation failed (${createResponse.status}).` });
-    }
-    const ticketResponse = await fetch(
-      `${SUPABASE_URL}/storage/v1/object/upload/sign/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}/${cleanMediaPath}`,
-      { method: "POST", headers: { ...serviceHeaders, "x-upsert": "true" }, body: JSON.stringify({}) }
-    );
-    if (!ticketResponse.ok) {
-      const detail = (await ticketResponse.text()).slice(0, 500);
-      return json(res, 502, { error: `Upload ticket failed (${ticketResponse.status}).`, detail });
-    }
-    const ticket = await ticketResponse.json();
-    return json(res, 200, {
-      ...ticket,
-      storageBaseUrl: SUPABASE_URL,
-      publicUrl: `${SUPABASE_URL}/storage/v1/object/public/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}/${cleanMediaPath}`
-    });
-  }
-
   const mediaPath = url.searchParams.get("media");
   if (req.method === "GET" && mediaPath) {
     const rootedMediaPath = mediaPath.startsWith("assets/") ? mediaPath : `assets/${mediaPath}`;
