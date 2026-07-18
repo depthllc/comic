@@ -25,6 +25,10 @@ insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_typ
 values ('comic30-exports', 'comic30-exports', false, 52428800, array['application/zip'])
 on conflict (id) do update set public = false;
 
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('comic30-media', 'comic30-media', true, 52428800, array['video/mp4', 'video/webm', 'model/gltf-binary'])
+on conflict (id) do update set public = true, file_size_limit = 52428800;
+
 create table if not exists users (
   id text primary key,
   name text not null,
