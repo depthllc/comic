@@ -1638,7 +1638,7 @@ async function handleApi(req, res, url) {
     }
     const ticketResponse = await fetch(
       `${SUPABASE_URL}/storage/v1/object/upload/sign/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}/${cleanMediaPath}`,
-      { method: "POST", headers: serviceHeaders, body: JSON.stringify({ upsert: true }) }
+      { method: "POST", headers: { ...serviceHeaders, "x-upsert": "true" }, body: JSON.stringify({}) }
     );
     if (!ticketResponse.ok) return json(res, 502, { error: `Upload ticket failed (${ticketResponse.status}).` });
     const ticket = await ticketResponse.json();
