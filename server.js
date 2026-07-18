@@ -49,6 +49,7 @@ const rateBuckets = new Map();
 const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "");
 const SUPABASE_STORAGE_BUCKET = String(process.env.SUPABASE_STORAGE_BUCKET || "comic30-exports");
+const SUPABASE_MEDIA_BUCKET = String(process.env.SUPABASE_MEDIA_BUCKET || "comic30-media");
 
 function emptyDb() {
   return {
@@ -1597,6 +1598,72 @@ async function createMobileBuildJob(project, target = "all") {
 }
 
 async function handleApi(req, res, url) {
+  if (req.method === "POST" && url.pathname === "/api/media/upload-ticket") {
+    const expectedToken = String(process.env.MEDIA_UPLOAD_TOKEN || "");
+    const suppliedToken = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    if (!expectedToken || suppliedToken !== expectedToken || !hasSupabase()) {
+      return json(res, 404, { error: "Upload channel is unavailable." });
+    }
+    const body = await readBody(req);
+    const mediaPath = String(body.path || "");
+    const cleanMediaPath = mediaPath
+      .split("/")
+      .filter((segment) => segment && segment !== "." && segment !== "..")
+      .map(encodeURIComponent)
+      .join("/");
+    if (!cleanMediaPath || !/^(assets%2F|assets\/)?(?:models|videos)\//.test(cleanMediaPath.replace(/%2F/gi, "/"))) {
+      return json(res, 400, { error: "Invalid media path." });
+    }
+    const serviceHeaders = {
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      "Content-Type": "application/json"
+    };
+    const bucketResponse = await fetch(`${SUPABASE_URL}/storage/v1/bucket/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}`, {
+      headers: serviceHeaders
+    });
+    if (bucketResponse.status === 404) {
+      const createResponse = await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
+        method: "POST",
+        headers: serviceHeaders,
+        body: JSON.stringify({
+          id: SUPABASE_MEDIA_BUCKET,
+          name: SUPABASE_MEDIA_BUCKET,
+          public: true,
+          file_size_limit: 52428800,
+          allowed_mime_types: ["video/mp4", "video/webm", "model/gltf-binary"]
+        })
+      });
+      if (!createResponse.ok) return json(res, 502, { error: `Media bucket creation failed (${createResponse.status}).` });
+    }
+    const ticketResponse = await fetch(
+      `${SUPABASE_URL}/storage/v1/object/upload/sign/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}/${cleanMediaPath}`,
+      { method: "POST", headers: serviceHeaders, body: JSON.stringify({ upsert: true }) }
+    );
+    if (!ticketResponse.ok) return json(res, 502, { error: `Upload ticket failed (${ticketResponse.status}).` });
+    const ticket = await ticketResponse.json();
+    return json(res, 200, {
+      ...ticket,
+      storageBaseUrl: SUPABASE_URL,
+      publicUrl: `${SUPABASE_URL}/storage/v1/object/public/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}/${cleanMediaPath}`
+    });
+  }
+
+  const mediaPath = url.searchParams.get("media");
+  if (req.method === "GET" && mediaPath) {
+    const cleanMediaPath = mediaPath
+      .split("/")
+      .filter((segment) => segment && segment !== "." && segment !== "..")
+      .map(encodeURIComponent)
+      .join("/");
+    if (!hasSupabase() || !cleanMediaPath) return json(res, 404, { error: "Media asset is unavailable." });
+    res.writeHead(302, {
+      Location: `${SUPABASE_URL}/storage/v1/object/public/${encodeURIComponent(SUPABASE_MEDIA_BUCKET)}/${cleanMediaPath}`,
+      "Cache-Control": "public, max-age=3600, s-maxage=86400"
+    });
+    return res.end();
+  }
+
   const bucket = url.pathname.includes("/auth/") ? "auth" : url.pathname.includes("/agent") ? "agent" : url.pathname.includes("/contacts/import") ? "import" : "default";
   if (!checkRateLimit(req, res, bucket)) return;
   const csrfExempt = [
