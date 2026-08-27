@@ -1,0 +1,2 @@
+# Comic30's internal Python engine currently uses Python's standard library only.
+# Python 3.11 or newer is recommended; there are no pip packages to install.

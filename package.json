@@ -7,7 +7,22 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "check": "node --check server.js && node --check api/index.js && node --check public/js/app.js && node --check tools/import-consented-contacts.js",
+    "dev:asset-worker": "node workers/source-asset-worker/server.js",
+    "dev:rig-worker": "node workers/rig-worker/server.js",
+    "dev:animation-worker": "node workers/animation-worker/server.js",
+    "dev:audio-worker": "node workers/audio-worker/server.js",
+    "dev:production": "node tools/start-production.js",
+    "doctor": "node tools/production-doctor.js",
+    "doctor:strict": "node tools/production-doctor.js --strict",
+    "audit:catalog": "node tools/catalog-asset-audit.js",
+    "audit:catalog:strict": "node tools/catalog-asset-audit.js --strict",
+    "check": "node --check server.js && node --check api/index.js && node --check public/js/app.js && node --check engine/load-local-env.js && node --check engine/local-engine-worker.js && node --check engine/text-to-game-pipeline.js && node --check engine/glb-inspector.js && node --check engine/rig-inspector.js && node --check engine/animation-inspector.js && node --check engine/audio-inspector.js && node --check engine/unreal-rig-handoff.js && node --check engine/unreal-animation-handoff.js && node --check engine/unreal-audio-handoff.js && node --check engine/source-asset-worker-client.js && node --check engine/rig-worker-client.js && node --check engine/animation-worker-client.js && node --check engine/audio-worker-client.js && node --check engine/production-worker-client.js && node --check workers/source-asset-worker/server.js && node --check workers/source-asset-worker/providers/http.js && node --check workers/source-asset-worker/providers/index.js && node --check workers/source-asset-worker/providers/trellis2.js && node --check workers/source-asset-worker/providers/meshy.js && node --check workers/rig-worker/server.js && node --check workers/rig-worker/providers/unirig.js && node --check workers/rig-worker/strategies/humanoid.js && node --check workers/rig-worker/strategies/creature.js && node --check workers/rig-worker/strategies/vehicle.js && node --check workers/animation-worker/server.js && node --check workers/animation-worker/retarget-profiles.js && node --check workers/animation-worker/providers/motiongpt.js && node --check workers/animation-worker/providers/procedural.js && node --check workers/audio-worker/server.js && node --check workers/audio-worker/providers/audiocraft.js && node --check tools/start-production.js && node --check tools/production-doctor.js && node --check tools/catalog-asset-audit.js && node --check tools/source-asset-worker-test.js && node --check tools/rig-worker-test.js && node --check tools/animation-worker-test.js && node --check tools/audio-worker-test.js && node --check tools/import-consented-contacts.js",
+    "test:backend": "node tools/backend-smoke-test.js",
+    "test:assets": "node tools/source-asset-worker-test.js",
+    "test:rig": "node tools/rig-worker-test.js",
+    "test:animation": "node tools/animation-worker-test.js",
+    "test:audio": "node tools/audio-worker-test.js",
+    "test:docker": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/docker-worker-smoke.ps1",
     "contacts:preview": "node tools/import-consented-contacts.js --source",
     "contacts:commit": "node tools/import-consented-contacts.js --commit --source"
   },
@@ -16,5 +31,8 @@
   },
   "devDependencies": {
     "fbx2gltf": "^0.9.7-p1"
+  },
+  "dependencies": {
+    "three": "^0.181.2"
   }
 }
