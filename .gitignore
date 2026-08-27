@@ -1,5 +1,26 @@
 data/db.json
 exports/*.zip
+engine-builds/
+worker-data/
+workers/source-asset-worker/data/
+workers/rig-worker/data/
 node_modules/
+.runtime/
 .env
 .DS_Store
+/comic30-server.*.log
+/runtime-*.png
+
+# The browser runtime needs only Three.js core plus the GLTF/skeleton helpers.
+# Keep the rest of the copied npm package out of Git and Vercel deployments.
+/public/assets/vendor/three/*
+!/public/assets/vendor/three/three.module.js
+!/public/assets/vendor/three/addons/
+/public/assets/vendor/three/addons/*
+!/public/assets/vendor/three/addons/loaders/
+!/public/assets/vendor/three/addons/utils/
+/public/assets/vendor/three/addons/loaders/*
+!/public/assets/vendor/three/addons/loaders/GLTFLoader.js
+/public/assets/vendor/three/addons/utils/*
+!/public/assets/vendor/three/addons/utils/BufferGeometryUtils.js
+!/public/assets/vendor/three/addons/utils/SkeletonUtils.js

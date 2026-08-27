@@ -7,7 +7,7 @@
     <meta name="description" content="Comic30 helps creators design story worlds, characters, game economies, and mobile game project kits for iOS and Android.">
     <link rel="icon" type="image/png" href="/assets/brand/comic30-icon.png">
     <link rel="apple-touch-icon" href="/assets/brand/comic30-icon.png">
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260819-unreal-playable-output">
   </head>
   <body>
     <canvas class="neural-canvas" id="neural-canvas" aria-hidden="true"></canvas>
@@ -27,7 +27,13 @@
       <div class="account-actions" id="account-actions"></div>
     </header>
 
-    <main id="app" aria-live="polite"></main>
+    <main id="app" aria-live="polite">
+      <section class="comic30-boot-screen" id="comic30-boot-screen">
+        <img src="/assets/brand/comic30-icon.png" alt="Comic30">
+        <strong>Loading Comic30</strong>
+        <span>Starting the AI Game Creation Engine…</span>
+      </section>
+    </main>
 
     <footer class="site-footer">
       <div class="footer-row">
@@ -49,7 +55,17 @@
     </footer>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="importmap">{"imports":{"three":"/assets/vendor/three/three.module.js","three/addons/":"/assets/vendor/three/addons/"}}</script>
     <script type="module" src="/assets/vendor/model-viewer.min.js"></script>
-    <script src="/js/app.js" defer></script>
+    <script src="/js/app.js?v=20260819-portal-playable-preview" defer></script>
+    <script>
+      window.setTimeout(function () {
+        var app = document.getElementById("app");
+        var boot = document.getElementById("comic30-boot-screen");
+        if (app && boot && app.contains(boot)) {
+          boot.innerHTML = '<img src="/assets/brand/comic30-icon.png" alt="Comic30"><strong>Comic30 is ready</strong><span>The interactive portal did not initialize automatically.</span><button type="button" onclick="location.href=\'/?portal=signin&comic30=manual-reload-20260817\'">Open Comic30 sign in</button>';
+        }
+      }, 4000);
+    </script>
   </body>
 </html>

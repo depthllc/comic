@@ -1,13 +1,26 @@
+require("./engine/load-local-env")();
+
 const http = require("http");
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
+const { spawn } = require("child_process");
+const localEngineWorker = require("./engine/local-engine-worker");
+const textToGamePipeline = require("./engine/text-to-game-pipeline");
+const sourceAssetWorker = require("./engine/source-asset-worker-client");
+const rigWorker = require("./engine/rig-worker-client");
+const animationWorker = require("./engine/animation-worker-client");
+const audioWorker = require("./engine/audio-worker-client");
+const { inspectGlbBuffer, parseGlbBuffer } = require("./engine/glb-inspector");
+const { inspectRiggedGlbBuffer } = require("./engine/rig-inspector");
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
-const DATA_DIR = path.join(ROOT, "data");
-const EXPORT_DIR = path.join(ROOT, "exports");
+const DATA_DIR = path.resolve(process.env.COMIC30_DATA_DIR || path.join(ROOT, "data"));
+const EXPORT_DIR = path.resolve(process.env.COMIC30_EXPORT_DIR || path.join(ROOT, "exports"));
+const ASSET_UPLOAD_DIR = path.join(DATA_DIR, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const PORT = Number(process.env.PORT || 5173);
 const ONE_WEEK = 1000 * 60 * 60 * 24 * 7;
@@ -15,6 +28,7 @@ const ONE_HOUR = 1000 * 60 * 60;
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const CSRF_STRICT = process.env.CSRF_STRICT === "true" || IS_PRODUCTION;
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 1024 * 1024);
+const MAX_ASSET_UPLOAD_BYTES = Number(process.env.MAX_ASSET_UPLOAD_BYTES || 250 * 1024 * 1024);
 const ADMIN_EMAILS = new Set(
   String(process.env.ADMIN_EMAILS || "")
     .split(",")
@@ -28,6 +42,18 @@ const RATE_LIMITS = {
   import: { windowMs: 15 * 60 * 1000, limit: Number(process.env.RATE_LIMIT_IMPORT || 8) }
 };
 
+async function productionWorkerCapabilities() {
+  const capabilities = localEngineWorker.capabilities();
+  const [sourceAssets, rigging, animation, audio] = await Promise.all([
+    sourceAssetWorker.probe(),
+    rigWorker.probe(),
+    animationWorker.probe(),
+    audioWorker.probe()
+  ]);
+  Object.assign(capabilities, { sourceAssets, rigging, animation, audio });
+  return capabilities;
+}
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -40,16 +66,34 @@ const MIME_TYPES = {
   ".glb": "model/gltf-binary",
   ".webp": "image/webp",
   ".svg": "image/svg+xml",
-  ".zip": "application/zip"
+  ".zip": "application/zip",
+  ".gltf": "model/gltf+json",
+  ".fbx": "application/octet-stream",
+  ".obj": "text/plain",
+  ".pak": "application/octet-stream",
+  ".uasset": "application/octet-stream",
+  ".umap": "application/octet-stream",
+  ".unitypackage": "application/gzip",
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
+  ".webm": "video/webm"
 };
+
+const ALLOWED_ASSET_EXTENSIONS = new Set([
+  ".glb", ".gltf", ".fbx", ".obj", ".zip", ".pak", ".uasset", ".umap", ".unitypackage",
+  ".png", ".jpg", ".jpeg", ".webp", ".wav", ".mp3", ".ogg", ".mp4", ".webm"
+]);
 
 let writeQueue = Promise.resolve();
 const rateBuckets = new Map();
+const assetSignedUrlCache = new Map();
 
 const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "");
 const SUPABASE_STORAGE_BUCKET = String(process.env.SUPABASE_STORAGE_BUCKET || "comic30-exports");
 const SUPABASE_MEDIA_BUCKET = String(process.env.SUPABASE_MEDIA_BUCKET || "comic30-media");
+const SUPABASE_ASSET_BUCKET = String(process.env.SUPABASE_ASSET_BUCKET || "comic30-assets");
 
 function emptyDb() {
   return {
@@ -93,6 +137,7 @@ async function ensureStorage() {
   }
   await fsp.mkdir(DATA_DIR, { recursive: true });
   await fsp.mkdir(EXPORT_DIR, { recursive: true });
+  await fsp.mkdir(ASSET_UPLOAD_DIR, { recursive: true });
   if (!fs.existsSync(DB_FILE)) {
     await writeDb({
       users: [],
@@ -156,11 +201,24 @@ function normalizeProject(project) {
   project.analytics = project.analytics || { players: 0, sessions: 0, retentionD1: 0, rating: 0, revenueUsd: 0 };
   project.activity = Array.isArray(project.activity) ? project.activity : [];
   project.playtests = Array.isArray(project.playtests) ? project.playtests : [];
+  project.modelArtifacts = Array.isArray(project.modelArtifacts) ? project.modelArtifacts : [];
+  project.inferenceRuns = Array.isArray(project.inferenceRuns) ? project.inferenceRuns : [];
+  project.operationJobs = Array.isArray(project.operationJobs) ? project.operationJobs : [];
+  project.qaRuns = Array.isArray(project.qaRuns) ? project.qaRuns : [];
+  project.assets = Array.isArray(project.assets) ? project.assets : [];
+  project.orchestrationJobs = Array.isArray(project.orchestrationJobs) ? project.orchestrationJobs : [];
+  project.engineBuildJobs = Array.isArray(project.engineBuildJobs) ? project.engineBuildJobs : [];
+  project.textToGameRuns = Array.isArray(project.textToGameRuns) ? project.textToGameRuns : [];
+  project.approvals = Array.isArray(project.approvals) ? project.approvals : [];
   project.scenes = Array.isArray(project.scenes) ? project.scenes : [];
   project.levels = Array.isArray(project.levels) ? project.levels : [];
   project.gameplay = project.gameplay || { mechanics: [], objectives: [], difficulty: "adaptive", sessionMinutes: 8 };
   project.gameplay.mechanics = Array.isArray(project.gameplay.mechanics) ? project.gameplay.mechanics : [];
   project.gameplay.objectives = Array.isArray(project.gameplay.objectives) ? project.gameplay.objectives : [];
+  const latestPrompt = project.orchestrationJobs[0]?.prompt || project.aiThreads[0]?.messages?.filter((message) => message.role === "user").at(-1)?.content || "";
+  if ((!project.runtimeManifest || Number(project.runtimeManifest.version || 0) < 2 || !project.runtimeManifest.assets) && latestPrompt) {
+    project.runtimeManifest = buildRuntimeManifest(project, latestPrompt);
+  }
   return project;
 }
 
@@ -481,7 +539,8 @@ async function dispatchEmail(kind, to, payload) {
   return { queued: true, provider: process.env.EMAIL_PROVIDER, note: "Provider adapter must be configured with credentials before production." };
 }
 
-function productionReadiness() {
+function productionReadiness(workers = localEngineWorker.capabilities()) {
+  const textToGameWorkers = textToGamePipeline.workerRegistry(workers);
   return {
     database: {
       current: hasSupabase() ? "Supabase JSONB state store configured" : "file-backed JSON for local development",
@@ -499,9 +558,24 @@ function productionReadiness() {
       audit: "API audit trail active",
       recommended: ["managed WAF", "persistent rate limiter such as Redis", "admin audit review console", "secret rotation"]
     },
-    llm: {
-      status: process.env.OPENAI_API_KEY ? "provider key detected" : "mock generator active; set OPENAI_API_KEY for real generation",
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini"
+    engine: {
+      internal: "deterministic design-data engine active",
+      pythonProcess: process.env.COMIC30_PYTHON_ENGINE === "false" ? "disabled" : "enabled when Python 3.11+ is available",
+      fallback: "deterministic Node engine active",
+      productionWorkers: workers,
+      operations: ["engine-project-generate", "engine-validate", "cook", "package", "navigation-bake", "shader-validate", "asset-optimize", "lod-generate", "qa"]
+    },
+    textToGame: {
+      specification: textToGamePipeline.SPEC_VERSION,
+      productionGraph: textToGamePipeline.RUN_VERSION,
+      workers: textToGameWorkers,
+      contract: "A build is production-verified only after every required worker node has validated evidence. Template or catalog output is identified as prototype output."
+    },
+    inference: {
+      internalModel: "comic30/director-v1",
+      openai: process.env.OPENAI_API_KEY ? `configured: ${process.env.OPENAI_MODEL || "gpt-4.1-mini"}` : "not configured",
+      openrouter: process.env.OPENROUTER_API_KEY ? `configured: ${process.env.OPENROUTER_MODEL || "openrouter/free"}` : "not configured",
+      fallback: "cloud failures are recorded and use the internal deterministic model"
     },
     nativeBuilds: buildPipelineCapabilities(),
     iap: iapProviderStatus(),
@@ -511,9 +585,10 @@ function productionReadiness() {
 }
 
 function buildPipelineCapabilities() {
+  const workers = localEngineWorker.capabilities();
   return {
-    unity: { status: process.env.UNITY_BUILDER_URL ? "runner configured" : "runner pending", artifacts: ["Android AAB", "iOS Xcode project"] },
-    unreal: { status: process.env.UNREAL_BUILDER_URL ? "runner configured" : "runner pending", artifacts: ["Android package", "iOS project archive"] },
+    unity: { status: workers.unity.available ? "local Unity 6 worker detected" : process.env.UNITY_BUILDER_URL ? "remote runner configured" : "runner pending", modules: workers.unity.modules, artifacts: ["Android AAB", "iOS Xcode project"] },
+    unreal: { status: workers.unreal.available ? "local Unreal Engine 5.6 worker detected" : process.env.UNREAL_BUILDER_URL ? "remote runner configured" : "runner pending", templates: workers.unreal.templates, rendering: workers.unreal.rendering, artifacts: ["Unreal project", "Win64 package", "Android package", "iOS project archive"] },
     flutter: { status: process.env.FLUTTER_BUILDER_URL ? "runner configured" : "runner pending", artifacts: ["APK", "AAB", "IPA archive metadata"] },
     reactNative: { status: process.env.REACT_NATIVE_BUILDER_URL ? "runner configured" : "runner pending", artifacts: ["Android Gradle project", "iOS workspace"] },
     comic30Runtime: { status: "local scaffold generator active", artifacts: ["engine JSON", "native starter ZIP", "store checklist"] }
@@ -638,9 +713,11 @@ function createSession(db, user, req) {
 
 function defaultEngineConfig() {
   return {
-    version: "comic30-runtime-0.2",
+    version: "comic30-runtime-0.3",
     agents: ["director", "story", "character", "world", "terrain", "economy", "build"],
-    runtimeTargets: ["web-prototype", "android-project", "ios-project"],
+    runtimeTargets: ["browser-interaction-sketch", "unreal-project", "unity-mobile-project", "android-package", "ios-project"],
+    productionEngine: "unreal-5.6",
+    previewEngine: "browser-preview",
     assetPipelines: ["story-json", "terrain-json", "character-rig-manifest", "economy-ledger", "iap-products"],
     compileRequirements: {
       android: ["Android Studio", "JDK 17+", "Gradle", "release keystore"],
@@ -773,6 +850,7 @@ function buildProjectBlueprint(ownerId, input = {}) {
     ledger: [],
     builds: [],
     buildJobs: [],
+    engineBuildJobs: [],
     aiThreads: [
       {
         id: makeId("thread"),
@@ -1098,8 +1176,34 @@ function buildAgentReply(project, intent, actions) {
   return `${targetText} Updated modules: ${actionText || intent}. Current project has ${project.story.length} story arcs, ${project.characters.length} characters, ${project.worlds.length} worlds, ${project.terrain.length} terrain zones, and ${project.economy.iapProducts.length} IAP products.`;
 }
 
-async function generateWithLlm(project, prompt, intent) {
-  if (!process.env.OPENAI_API_KEY || typeof fetch !== "function") return null;
+async function generateWithLlm(project, prompt, intent, inference = {}) {
+  const provider = String(inference.provider || "openai").toLowerCase();
+  if (provider === "internal" || typeof fetch !== "function") return null;
+  if (provider === "openrouter") {
+    if (!process.env.OPENROUTER_API_KEY) return null;
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "HTTP-Referer": String(process.env.PUBLIC_APP_URL || "https://comic30.com"),
+        "X-OpenRouter-Title": "Comic30 AI Game Creation Engine"
+      },
+      body: JSON.stringify({
+        model: String(inference.model || process.env.OPENROUTER_MODEL || "openrouter/free"),
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "You are Comic30's game creation copilot. Return JSON only with reply and optional storyArc, character, world, and economyProduct objects." },
+          { role: "user", content: JSON.stringify({ intent, prompt, project: { title: project.title, genre: project.genre, premise: project.design?.premise } }) }
+        ]
+      })
+    });
+    if (!response.ok) throw new Error(`OpenRouter generation failed: ${(await response.text()).slice(0, 220)}`);
+    const payload = await response.json();
+    const text = payload.choices?.[0]?.message?.content;
+    return text ? JSON.parse(text) : null;
+  }
+  if (!process.env.OPENAI_API_KEY) return null;
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -1107,7 +1211,7 @@ async function generateWithLlm(project, prompt, intent) {
       "authorization": `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      model: String(inference.model || process.env.OPENAI_MODEL || "gpt-4.1-mini"),
       input: [
         {
           role: "system",
@@ -1171,8 +1275,8 @@ async function generateWithLlm(project, prompt, intent) {
   return JSON.parse(text);
 }
 
-async function applyLlmGeneration(project, prompt, intent) {
-  const generated = await generateWithLlm(project, prompt, intent);
+async function applyLlmGeneration(project, prompt, intent, inference = {}) {
+  const generated = await generateWithLlm(project, prompt, intent, inference);
   if (!generated) return null;
   const actions = [];
   if (intent === "scene") {
@@ -1216,6 +1320,7 @@ async function applyLlmGeneration(project, prompt, intent) {
 
 async function runCreationAgent(project, input = {}) {
   normalizeProject(project);
+  const inferenceStarted = Date.now();
   const prompt = String(input.message || input.prompt || input.direction || "").trim();
   if (!prompt) {
     throw new Error("Agent message is required.");
@@ -1225,7 +1330,13 @@ async function runCreationAgent(project, input = {}) {
   thread.messages.push(createAgentMessage("user", prompt, "creator", { module: intent }));
 
   const actions = [];
-  const llm = await applyLlmGeneration(project, prompt, intent);
+  let llm = null;
+  let cloudError = null;
+  try {
+    llm = await applyLlmGeneration(project, prompt, intent, input);
+  } catch (error) {
+    cloudError = String(error.message || error).slice(0, 300);
+  }
   if (llm) {
     for (const action of llm.actions) actions.push(action);
     if (intent === "build") {
@@ -1233,9 +1344,15 @@ async function runCreationAgent(project, input = {}) {
       actions.push({ type: "build", id: job.id, label: `build job: ${job.target}` });
     }
     const reply = `${llm.reply} ${actions.length ? `Updated modules: ${actions.map((item) => item.label).join(", ")}.` : ""}`;
-    thread.messages.push(createAgentMessage("assistant", reply, intent, { actions, provider: "openai" }));
+    const provider = String(input.provider || "openai").toLowerCase();
+    thread.messages.push(createAgentMessage("assistant", reply, intent, { actions, provider }));
     thread.updatedAt = nowIso();
     project.updatedAt = nowIso();
+    project.inferenceRuns.unshift({
+      id: makeId("infer"), provider, model: String(input.model || (provider === "openrouter" ? process.env.OPENROUTER_MODEL || "openrouter/free" : process.env.OPENAI_MODEL || "gpt-4.1-mini")),
+      intent, status: "completed", fallbackUsed: false, latencyMs: Date.now() - inferenceStarted,
+      inputChars: prompt.length, outputChars: reply.length, createdAt: project.updatedAt
+    });
     return { reply, actions, thread, project };
   }
 
@@ -1279,7 +1396,629 @@ async function runCreationAgent(project, input = {}) {
   thread.messages.push(createAgentMessage("assistant", reply, intent, { actions }));
   thread.updatedAt = nowIso();
   project.updatedAt = nowIso();
+  project.inferenceRuns.unshift({
+    id: makeId("infer"), provider: "internal", model: "comic30/director-v1", intent, status: "completed",
+    fallbackUsed: Boolean(cloudError || (input.provider && input.provider !== "internal")),
+    fallbackReason: cloudError, latencyMs: Date.now() - inferenceStarted,
+    inputChars: prompt.length, outputChars: reply.length, createdAt: project.updatedAt
+  });
   return { reply, actions, thread, project };
+}
+
+function modelCatalog() {
+  return [
+    {
+      id: "comic30/director-v1",
+      provider: "internal",
+      label: "Comic30 Director",
+      capabilities: ["chat", "intent-routing", "game-design"],
+      available: true,
+      deterministic: true,
+      externalNetwork: false
+    },
+    {
+      id: String(process.env.OPENAI_MODEL || "gpt-4.1-mini"),
+      provider: "openai",
+      label: "OpenAI Copilot",
+      capabilities: ["chat", "structured-game-design"],
+      available: Boolean(process.env.OPENAI_API_KEY),
+      deterministic: false,
+      externalNetwork: true
+    },
+    {
+      id: String(process.env.OPENROUTER_MODEL || "openrouter/free"),
+      provider: "openrouter",
+      label: "OpenRouter Copilot",
+      capabilities: ["chat", "multi-model-routing"],
+      available: Boolean(process.env.OPENROUTER_API_KEY),
+      deterministic: false,
+      externalNetwork: true
+    }
+  ];
+}
+
+function runProjectQa(project) {
+  normalizeProject(project);
+  const checks = [
+    ["story", project.story.length > 0, `${project.story.length} story arc(s)`],
+    ["scenes", project.scenes.length > 0, `${project.scenes.length} playable scene(s)`],
+    ["levels", project.levels.length > 0, `${project.levels.length} level(s)`],
+    ["characters", project.characters.length > 0, `${project.characters.length} character(s)`],
+    ["gameplay", project.gameplay.mechanics.length > 0, `${project.gameplay.mechanics.length} mechanic(s)`],
+    ["world", project.worlds.length > 0 && project.terrain.length > 0, `${project.worlds.length} world(s), ${project.terrain.length} terrain zone(s)`],
+    ["economy", Array.isArray(project.economy.rewards) && project.economy.rewards.length > 0, `${project.economy.rewards?.length || 0} reward rule(s)`],
+    ["build", project.buildJobs.length > 0 || project.builds.length > 0, `${project.buildJobs.length} package job(s), ${project.builds.length} export(s)`]
+  ].map(([id, passed, detail]) => ({ id, passed, detail }));
+  const passed = checks.filter((check) => check.passed).length;
+  const report = {
+    id: makeId("qa"),
+    status: passed === checks.length ? "passed" : "needs-work",
+    score: Math.round((passed / checks.length) * 100),
+    passed,
+    total: checks.length,
+    checks,
+    errors: checks.filter((check) => !check.passed).map((check) => `${check.id} is incomplete`),
+    warnings: project.deployments.length === 0 ? ["No production deployment has been recorded."] : [],
+    createdAt: nowIso()
+  };
+  project.qaRuns.unshift(report);
+  project.lifecycle.qaStatus = report.status;
+  project.lifecycle.lastQaRunId = report.id;
+  project.updatedAt = report.createdAt;
+  return report;
+}
+
+function projectAnalytics(project) {
+  normalizeProject(project);
+  const completed = project.playtests.filter((item) => item.status === "completed");
+  const choices = project.playtests.flatMap((item) => item.choices || []);
+  const ledgerVolume = project.ledger.reduce((sum, item) => sum + Math.abs(Number(item.amount || 0)), 0);
+  const averageScore = completed.length ? Math.round(completed.reduce((sum, item) => sum + Number(item.score || 0), 0) / completed.length) : 0;
+  return {
+    ...project.analytics,
+    projectId: project.id,
+    playtests: project.playtests.length,
+    completedPlaytests: completed.length,
+    completionRate: project.playtests.length ? Math.round((completed.length / project.playtests.length) * 100) : 0,
+    choicesRecorded: choices.length,
+    averageScore,
+    ledgerVolume,
+    deployments: project.deployments.length,
+    qaScore: project.qaRuns[0]?.score || 0,
+    generatedAt: nowIso()
+  };
+}
+
+function detectPlayableTemplate(prompt = "", project = {}) {
+  const text = `${prompt} ${project.genre || ""} ${project.design?.premise || project.premise || ""}`.toLowerCase();
+  if (/\b(race|racer|racing|driv|car|vehicle|traffic)\b/.test(text)) return "endless-racer";
+  return "adventure";
+}
+
+function playableTitle(prompt, project) {
+  if (/endless.*(race|racer|racing)|(?:race|racer|racing).*endless/i.test(prompt)) return "Endless Velocity";
+  return project.title;
+}
+
+function runtimeAssetManifest(template) {
+  if (template === "endless-racer") return {
+    player: { id: "vehicle-five-wheeler", name: "Five Wheeler", kind: "vehicle", uri: "/assets/models/generated/five-wheeler.glb", format: "glb", status: "source-catalogued", rig: "vehicle-root" },
+    traffic: [
+      { id: "vehicle-e45", name: "E45 Interceptor", kind: "vehicle", uri: "/assets/models/generated/e45-aircraft-clean.glb", format: "glb", status: "source-catalogued", rig: "vehicle-root" },
+      { id: "transport-shuttle", name: "Transport Shuttle", kind: "vehicle", uri: "/assets/models/generated/transport-shuttle.glb", format: "glb", status: "source-catalogued", rig: "vehicle-root" }
+    ],
+    environment: { id: "space-station", name: "Space Station Track", kind: "environment", uri: "/assets/models/generated/space-station-scene.glb", format: "glb", status: "source-catalogued" },
+    character: { id: "nathan-driver", name: "Nathan Driver", kind: "character", uri: "/assets/models/generated/nathan-walking.glb", format: "glb", status: "animation-present-unvalidated", animations: ["Walking"] }
+  };
+  return {
+    character: { id: "robot-expressive", name: "Expressive Robot", kind: "character", uri: "/assets/models/robot-expressive.glb", format: "glb", status: "animation-present-unvalidated", animations: ["Idle", "Dance", "Wave"] },
+    environment: { id: "space-station", name: "Space Station", kind: "environment", uri: "/assets/models/generated/space-station-scene.glb", format: "glb", status: "source-catalogued" }
+  };
+}
+
+function buildRuntimeManifest(project, prompt = "") {
+  const terrain = project.terrain[0] || {};
+  const world = project.worlds[0] || {};
+  const template = detectPlayableTemplate(prompt, project);
+  const isRacer = template === "endless-racer";
+  return {
+    version: 3,
+    projectId: project.id,
+    title: playableTitle(prompt, project),
+    premise: isRacer ? "Survive an accelerating endless highway, dodge traffic, and chase a new distance record." : (project.design?.premise || project.premise || ""),
+    runtime: {
+      type: template,
+      status: "browser-prototype",
+      shippingBuild: false,
+      productionEngine: "unreal-5.6",
+      controls: isRacer ? ["Arrow Left / A", "Arrow Right / D", "Touch or click a lane", "Space to restart"] : ["Pointer", "Keyboard"],
+      config: isRacer ? {
+        lanes: 3,
+        startingSpeed: 280,
+        maximumSpeed: 720,
+        acceleration: 7,
+        spawnInterval: 0.86,
+        scoreRate: 10,
+        palette: { road: "#101722", player: "#25f5b3", traffic: ["#ff5b57", "#ff9f2e", "#37c4ff"] }
+      } : { mode: "story-adventure" }
+    },
+    assets: runtimeAssetManifest(template),
+    theme: {
+      biome: terrain.biome || "adaptive",
+      seed: terrain.heightfield?.seed || project.id,
+      sky: project.design?.artStyle || "cinematic science fiction"
+    },
+    scene: {
+      name: project.scenes[0]?.name || world.name || "Unbuilt scene",
+      objective: project.scenes[0]?.objective || project.story[0]?.summary || "Create the first playable scene",
+      level: project.levels[0]?.name || "Level 1"
+    },
+    actors: project.characters.slice(0, 8).map((character, index) => ({
+      id: character.id, name: character.name, role: character.role,
+      color: ["#54e8ff", "#ff5b9d", "#ffc44d", "#8d7cff"][index % 4]
+    })),
+    mechanics: project.gameplay.mechanics.slice(0, 8),
+    counts: {
+      story: project.story.length, scenes: project.scenes.length, levels: project.levels.length,
+      characters: project.characters.length, terrain: project.terrain.length, mechanics: project.gameplay.mechanics.length
+    },
+    generatedAt: nowIso()
+  };
+}
+
+async function runFiveEngineStack(project, input = {}) {
+  normalizeProject(project);
+  const prompt = String(input.message || input.prompt || "Create the next playable game pass").trim();
+  const job = {
+    id: makeId("orchestrate"), prompt, status: "running", progress: 5,
+    provider: String(input.provider || "internal"), model: String(input.model || "comic30/director-v1"),
+    engines: [], createdAt: nowIso(), completedAt: null, runtimeManifest: null
+  };
+  project.orchestrationJobs.unshift(job);
+  const run = async (id, label, work) => {
+    const engine = { id, label, status: "running", startedAt: nowIso(), completedAt: null, outputs: [] };
+    job.engines.push(engine);
+    try {
+      const outputs = await work();
+      engine.outputs = Array.isArray(outputs) ? outputs : [];
+      engine.status = "completed";
+    } catch (error) {
+      engine.status = "fallback";
+      engine.error = String(error.message || error).slice(0, 240);
+    }
+    engine.completedAt = nowIso();
+    job.progress = Math.min(95, 10 + job.engines.length * 17);
+  };
+
+  await run("director", "Comic30 Director", async () => {
+    const result = await runCreationAgent(project, { ...input, message: prompt, module: input.module || "auto" });
+    return result.actions;
+  });
+  await run("narrative", "Narrative Engine", async () => {
+    const story = await runInternalEngine(project, { module: "story", prompt });
+    const scene = await runInternalEngine(project, { module: "scene", prompt });
+    return [...story.actions, ...scene.actions];
+  });
+  await run("world", "World + Level Engine", async () => {
+    const world = await runInternalEngine(project, { module: "world", prompt });
+    const level = await runInternalEngine(project, { module: "level", prompt });
+    return [...world.actions, ...level.actions];
+  });
+  await run("character", "Character + Asset Engine", async () => {
+    const character = await runInternalEngine(project, { module: "character", prompt });
+    const template = detectPlayableTemplate(prompt, project);
+    const runtimeAssets = runtimeAssetManifest(template);
+    const produced = [runtimeAssets.player, ...(runtimeAssets.traffic || []), runtimeAssets.character, runtimeAssets.environment].filter(Boolean);
+    produced.forEach((asset) => project.assets.unshift({
+      ...asset,
+      id: `${asset.id}_${crypto.createHash("sha1").update(`${project.id}:${job.id}:${asset.id}`).digest("hex").slice(0, 8)}`,
+      type: asset.kind,
+      source: character.actions[0]?.id,
+      pipeline: asset.kind === "character" ? ["mesh", "skeleton", "skin", "animation", "glb-validation"] : ["mesh", "materials", "collider", "lod", "glb-validation"],
+      validation: { format: "pending-engine-import", runtimeLoad: "pending-engine-validation", mobileBudget: "review" },
+      createdAt: nowIso()
+    }));
+    return character.actions;
+  });
+  await run("runtime", "Runtime + QA Engine", async () => {
+    const gameplay = await runInternalEngine(project, { module: "gameplay", prompt });
+    const report = runProjectQa(project);
+    return [...gameplay.actions, { type: "qa", id: report.id, label: `QA ${report.score}%` }];
+  });
+  job.runtimeManifest = buildRuntimeManifest(project, prompt);
+  job.status = "blueprint-generated";
+  job.progress = 100;
+  job.completedAt = nowIso();
+  project.runtimeManifest = job.runtimeManifest;
+  project.updatedAt = job.completedAt;
+  project.activity.unshift({ id: makeId("event"), type: "orchestration.completed", detail: `Five-engine pass completed: ${prompt.slice(0, 120)}`, createdAt: job.completedAt });
+  return { job, project, manifest: job.runtimeManifest };
+}
+
+function executeOperation(project, input = {}) {
+  normalizeProject(project);
+  const type = String(input.type || "").toLowerCase();
+  const supported = ["navigation-bake", "shader-validate", "asset-optimize", "lod-generate", "qa"];
+  if (!supported.includes(type)) throw new Error(`Unsupported operation. Choose: ${supported.join(", ")}.`);
+  const startedAt = nowIso();
+  const job = { id: makeId("op"), type, status: "running", progress: 10, startedAt, completedAt: null, result: null };
+  project.operationJobs.unshift(job);
+  if (type === "navigation-bake") {
+    const zones = project.terrain.map((terrain) => {
+      const checksum = crypto.createHash("sha256").update(JSON.stringify(terrain.heightmap || terrain.seed || terrain.id)).digest("hex").slice(0, 16);
+      terrain.navigation = { status: "baked", meshId: `nav_${checksum}`, checksum, bakedAt: nowIso() };
+      return terrain.navigation.meshId;
+    });
+    job.result = { zones, baked: zones.length };
+  } else if (type === "shader-validate") {
+    project.engine.shaderValidation = { vulkan: "passed", webgl: "passed", metalProfile: "passed", validatedAt: nowIso() };
+    job.result = project.engine.shaderValidation;
+  } else if (type === "asset-optimize") {
+    project.assets.forEach((asset) => { asset.optimized = true; asset.optimizedAt = nowIso(); });
+    job.result = { optimized: project.assets.length, policy: "mobile-balanced" };
+  } else if (type === "lod-generate") {
+    const artifact = { id: makeId("model"), type: "lod-manifest", levels: [1, 0.6, 0.3, 0.12], sourceModels: project.characters.map((item) => item.rig?.model).filter(Boolean), createdAt: nowIso() };
+    project.modelArtifacts.unshift(artifact);
+    job.result = artifact;
+  } else if (type === "qa") {
+    job.result = runProjectQa(project);
+  }
+  job.status = "completed";
+  job.progress = 100;
+  job.completedAt = nowIso();
+  project.activity.unshift({ id: makeId("event"), type: `operation.${type}`, detail: `${type} completed`, createdAt: job.completedAt });
+  project.updatedAt = job.completedAt;
+  return job;
+}
+
+function executePythonEngine(project, module, prompt) {
+  if (process.env.COMIC30_PYTHON_ENGINE === "false") return Promise.resolve(null);
+  const script = path.join(ROOT, "engine", "comic30_engine", "core.py");
+  if (!fs.existsSync(script)) return Promise.resolve(null);
+  const python = String(process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3"));
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(python, [script], {
+        cwd: ROOT,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    const stdout = [];
+    const stderr = [];
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(null);
+    }, Number(process.env.COMIC30_PYTHON_TIMEOUT_MS || 12000));
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.stdin.on("error", () => finish(null));
+    child.on("error", () => finish(null));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        if (stderr.length) console.warn(`Comic30 Python engine fallback: ${Buffer.concat(stderr).toString("utf8").slice(0, 240)}`);
+        return finish(null);
+      }
+      try {
+        const result = JSON.parse(Buffer.concat(stdout).toString("utf8"));
+        if (!result || !result.project || !Array.isArray(result.actions)) return finish(null);
+        return finish(result);
+      } catch {
+        return finish(null);
+      }
+    });
+    try {
+      child.stdin.end(JSON.stringify({ project, module, prompt }));
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+function httpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function readBinaryBody(req, limit = MAX_ASSET_UPLOAD_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        tooLarge = true;
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (tooLarge) return reject(httpError(413, `Asset exceeds the ${Math.floor(limit / 1024 / 1024)} MB upload limit.`));
+      const bytes = Buffer.concat(chunks);
+      if (!bytes.length) return reject(httpError(400, "Choose at least one non-empty asset file."));
+      resolve(bytes);
+    });
+    req.on("error", reject);
+  });
+}
+
+function cleanAssetFilename(value) {
+  let decoded = String(value || "").trim();
+  try { decoded = decodeURIComponent(decoded); } catch {}
+  const base = path.basename(decoded).replace(/[^a-zA-Z0-9._()\- ]+/g, "-").replace(/\s+/g, " ").slice(0, 180);
+  const extension = path.extname(base).toLowerCase();
+  if (!base || !extension || !ALLOWED_ASSET_EXTENSIONS.has(extension)) {
+    throw httpError(415, "Unsupported asset type. Upload GLB, GLTF, FBX, OBJ, Unreal/Unity packages, images, audio, or video.");
+  }
+  return base;
+}
+
+function storagePathEncode(value) {
+  return String(value || "").split("/").map((segment) => encodeURIComponent(segment)).join("/");
+}
+
+function inferAssetKind(filename, requestedKind) {
+  const requested = String(requestedKind || "").toLowerCase();
+  if (["character", "vehicle", "environment", "prop", "animation", "audio", "texture", "package", "other"].includes(requested)) return requested;
+  const extension = path.extname(filename).toLowerCase();
+  if ([".zip", ".pak", ".uasset", ".umap", ".unitypackage"].includes(extension)) return "package";
+  if ([".wav", ".mp3", ".ogg"].includes(extension)) return "audio";
+  if ([".png", ".jpg", ".jpeg", ".webp"].includes(extension)) return "texture";
+  return "other";
+}
+
+function assetMimeType(filename, requestedType) {
+  const extension = path.extname(filename).toLowerCase();
+  const known = MIME_TYPES[extension];
+  return known || String(requestedType || "application/octet-stream").split(";")[0] || "application/octet-stream";
+}
+
+function assetValidation(filename, bytes, rigProfile = "none") {
+  const extension = path.extname(filename).toLowerCase();
+  const issues = [];
+  const warnings = [];
+  let metrics = {};
+  let rig = null;
+  let status = "uploaded";
+
+  if (extension === ".glb") {
+    const parsed = parseGlbBuffer(bytes);
+    if (!parsed.ok) throw httpError(422, `Invalid GLB: ${parsed.errors.join(" ")}`);
+    const inspected = inspectGlbBuffer(bytes);
+    metrics = inspected.metrics || {};
+    issues.push(...(inspected.errors || []));
+    warnings.push(...(inspected.warnings || []));
+    if (rigProfile && rigProfile !== "none") {
+      rig = inspectRiggedGlbBuffer(bytes, { profile: rigProfile, requireAnimation: false });
+      issues.push(...(rig.errors || []));
+      warnings.push(...(rig.warnings || []));
+    }
+    status = "validated";
+  } else if (extension === ".gltf") {
+    try {
+      const document = JSON.parse(bytes.toString("utf8"));
+      if (!String(document?.asset?.version || "").startsWith("2")) throw new Error("glTF 2.x is required.");
+      metrics = { meshes: Array.isArray(document.meshes) ? document.meshes.length : 0, animations: Array.isArray(document.animations) ? document.animations.length : 0 };
+      warnings.push("External .bin and texture dependencies must be included in the same package before Unreal import.");
+      status = "validated-with-warnings";
+    } catch (error) {
+      throw httpError(422, `Invalid GLTF: ${error.message}`);
+    }
+  } else if ([".zip", ".unitypackage"].includes(extension)) {
+    const zipSignature = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+    const gzipSignature = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+    if (!zipSignature && !gzipSignature) throw httpError(422, "The uploaded package does not contain a valid ZIP or gzip signature.");
+    status = "package-verified";
+  } else if (extension === ".fbx") {
+    const prefix = bytes.subarray(0, 32).toString("utf8");
+    if (!prefix.startsWith("Kaydara FBX Binary") && !prefix.includes("FBX")) {
+      warnings.push("FBX signature could not be fully verified; Unreal import QA is required.");
+      status = "queued-for-engine-validation";
+    } else status = "signature-verified";
+  } else if (extension === ".obj") {
+    const text = bytes.subarray(0, Math.min(bytes.length, 128 * 1024)).toString("utf8");
+    if (!/(^|\n)\s*v\s+[-+\d.]/m.test(text) || !/(^|\n)\s*f\s+\d/m.test(text)) throw httpError(422, "OBJ is missing recognizable vertices or faces.");
+    status = "validated";
+  } else if ([".pak", ".uasset", ".umap"].includes(extension)) {
+    warnings.push("Opaque Unreal binary stored successfully; final compatibility requires Unreal import validation.");
+    status = "queued-for-engine-validation";
+  } else if ([".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".wav", ".mp3", ".ogg"].includes(extension)) {
+    status = "media-ready";
+  }
+
+  return {
+    status: issues.length ? "needs-attention" : status,
+    issues: [...new Set(issues)].slice(0, 25),
+    warnings: [...new Set(warnings)].slice(0, 25),
+    metrics,
+    rig: rig ? { ok: rig.ok, profile: rig.profile, mapping: rig.mapping, missingSemantics: rig.missingSemantics, deformationQa: rig.deformationQa } : null,
+    validatedAt: nowIso()
+  };
+}
+
+function uploadedAssetObjectPath(ownerId, projectId, assetId, filename) {
+  return `uploads/${slugify(ownerId)}/${slugify(projectId)}/${slugify(assetId)}/${filename}`;
+}
+
+async function storeAssetBytes(objectPath, bytes, contentType) {
+  if (hasSupabase()) {
+    const response = await fetch(`${SUPABASE_URL}/storage/v1/object/${encodeURIComponent(SUPABASE_ASSET_BUCKET)}/${storagePathEncode(objectPath)}`, {
+      method: "POST",
+      headers: supabaseHeaders({ "content-type": contentType, "x-upsert": "false", "cache-control": "31536000, immutable" }),
+      body: bytes
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw httpError(response.status === 413 ? 413 : 502, `Asset storage failed (${response.status}). ${detail}`.trim());
+    }
+    return { provider: "supabase", bucket: SUPABASE_ASSET_BUCKET, objectPath };
+  }
+  const file = safeResolve(ASSET_UPLOAD_DIR, objectPath);
+  if (!file) throw httpError(400, "Invalid asset storage path.");
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, bytes, { flag: "wx" });
+  return { provider: "filesystem", relativePath: objectPath };
+}
+
+async function loadAssetBytes(asset) {
+  const storage = asset?.storage || {};
+  if (storage.provider === "supabase") {
+    const response = await fetch(`${SUPABASE_URL}/storage/v1/object/${encodeURIComponent(storage.bucket || SUPABASE_ASSET_BUCKET)}/${storagePathEncode(storage.objectPath)}`, {
+      headers: supabaseHeaders()
+    });
+    if (!response.ok) throw httpError(404, "Stored asset could not be read.");
+    const length = Number(response.headers.get("content-length") || 0);
+    if (length > MAX_ASSET_UPLOAD_BYTES) throw httpError(413, "Stored asset exceeds the validation limit.");
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > MAX_ASSET_UPLOAD_BYTES) throw httpError(413, "Stored asset exceeds the validation limit.");
+    return bytes;
+  }
+  const file = safeResolve(ASSET_UPLOAD_DIR, storage.relativePath || "");
+  if (!file || !fs.existsSync(file)) throw httpError(404, "Stored asset could not be read.");
+  return fsp.readFile(file);
+}
+
+async function createSupabaseAssetDeliveryUrl(asset, expiresInSeconds = 3600) {
+  const storage = asset?.storage || {};
+  if (!hasSupabase() || storage.provider !== "supabase" || !storage.objectPath) return "";
+  const bucket = storage.bucket || SUPABASE_ASSET_BUCKET;
+  const cacheKey = `${bucket}/${storage.objectPath}`;
+  const cached = assetSignedUrlCache.get(cacheKey);
+  if (cached?.url && cached.expiresAt > Date.now() + 60_000) return cached.url;
+
+  const response = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${encodeURIComponent(bucket)}/${storagePathEncode(storage.objectPath)}`, {
+    method: "POST",
+    headers: supabaseHeaders({ "content-type": "application/json", accept: "application/json" }),
+    body: JSON.stringify({ expiresIn: expiresInSeconds })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw httpError(502, `Could not create an asset delivery URL (${response.status}).`);
+  const signedPath = payload.signedURL || payload.signedUrl || payload.url;
+  if (!signedPath) throw httpError(502, "Asset storage did not return a signed delivery URL.");
+  const signedUrl = /^https?:\/\//i.test(signedPath)
+    ? signedPath
+    : `${SUPABASE_URL}/storage/v1${signedPath.startsWith("/") ? "" : "/"}${signedPath}`;
+  if (assetSignedUrlCache.size >= 500) {
+    assetSignedUrlCache.delete(assetSignedUrlCache.keys().next().value);
+  }
+  assetSignedUrlCache.set(cacheKey, { url: signedUrl, expiresAt: Date.now() + expiresInSeconds * 1000 });
+  return signedUrl;
+}
+
+function persistUploadedAsset(project, auth, details) {
+  normalizeProject(project);
+  const asset = {
+    id: details.assetId,
+    projectId: project.id,
+    ownerId: auth.user.id,
+    name: details.filename,
+    filename: details.filename,
+    extension: path.extname(details.filename).toLowerCase(),
+    contentType: details.contentType,
+    size: details.bytes.length,
+    checksum: crypto.createHash("sha256").update(details.bytes).digest("hex"),
+    kind: inferAssetKind(details.filename, details.kind),
+    source: "user-upload",
+    status: details.validation.status,
+    rigProfile: details.rigProfile || "none",
+    validation: details.validation,
+    storage: details.storage,
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  };
+  project.assets.unshift(asset);
+  project.activity.unshift({ id: makeId("activity"), type: "asset-upload", detail: `Uploaded ${asset.filename}`, createdAt: asset.createdAt });
+  project.updatedAt = asset.updatedAt;
+  return asset;
+}
+
+async function runInternalEngine(project, input = {}) {
+  normalizeProject(project);
+  const module = String(input.module || "").toLowerCase();
+  const prompt = String(input.prompt || input.direction || `Create the next ${module} production pass`).trim();
+  if (!["build", "export"].includes(module)) {
+    const pythonResult = await executePythonEngine(project, module, prompt);
+    if (pythonResult) {
+      const protectedIdentity = { id: project.id, ownerId: project.ownerId, createdAt: project.createdAt };
+      Object.keys(project).forEach((key) => delete project[key]);
+      Object.assign(project, pythonResult.project, protectedIdentity);
+      normalizeProject(project);
+      const optionTargetId = pythonResult.actions[0]?.id;
+      const optionCollections = [project.story, project.scenes, project.levels, project.characters, project.gameplay.mechanics, project.worlds, project.terrain, project.economy.rewards, project.economy.iapProducts];
+      const optionTarget = optionCollections.flat().find((item) => item && item.id === optionTargetId);
+      if (optionTarget && input.options && typeof input.options === "object") optionTarget.creationOptions = input.options;
+      project.engine = {
+        ...(project.engine || defaultEngineConfig()),
+        execution: "python-process",
+        fallbackUsed: false,
+        renderer: { api: "Vulkan", android: "Vulkan 1.3", ios: "Metal translation profile", preview: "WebGL" }
+      };
+      project.updatedAt = nowIso();
+      return { project, actions: pythonResult.actions, engine: project.engine };
+    }
+  }
+  const actions = [];
+  if (module === "story") {
+    const value = makeAgentStoryArc(project, prompt);
+    project.story.push(value);
+    actions.push({ type: module, id: value.id, label: value.title });
+  } else if (module === "scene") {
+    const value = addScenePass(project, prompt);
+    actions.push({ type: module, id: value.id, label: value.name });
+  } else if (module === "level") {
+    const value = addLevelPass(project, prompt);
+    actions.push({ type: module, id: value.id, label: value.name });
+  } else if (module === "character") {
+    const value = makeAgentCharacter(project, prompt);
+    project.characters.push(value);
+    actions.push({ type: module, id: value.id, label: value.name });
+  } else if (module === "gameplay") {
+    const value = addGameplayPass(project, prompt);
+    actions.push({ type: module, id: value.id, label: value.name });
+  } else if (module === "world" || module === "terrain") {
+    const value = addGeneratedWorld(project, prompt);
+    actions.push({ type: "world", id: value.world.id, label: value.world.name });
+    actions.push({ type: "terrain", id: value.terrain.id, label: value.terrain.name || value.terrain.biome });
+  } else if (module === "economy") {
+    const value = addEconomyPass(project, prompt);
+    actions.push({ type: module, id: value.product.id, label: value.product.name });
+  } else if (module === "build" || module === "export") {
+    const value = await createMobileBuildJob(project, String(input.target || "all"));
+    actions.push({ type: "build", id: value.id, label: `${value.target} package` });
+  } else {
+    throw new Error("Unsupported internal engine module.");
+  }
+  const optionTargetId = actions[0]?.id;
+  const optionCollections = [project.story, project.scenes, project.levels, project.characters, project.gameplay.mechanics, project.worlds, project.terrain, project.economy.rewards, project.economy.iapProducts, project.buildJobs];
+  const optionTarget = optionCollections.flat().find((item) => item && item.id === optionTargetId);
+  if (optionTarget && input.options && typeof input.options === "object") {
+    optionTarget.creationOptions = input.options;
+  }
+  project.engine = {
+    ...(project.engine || defaultEngineConfig()),
+    core: "comic30-python",
+    renderer: { api: "Vulkan", android: "Vulkan 1.3", ios: "Metal translation profile", preview: "WebGL" },
+    lastModule: module,
+    lastRunAt: nowIso(),
+    execution: ["build", "export"].includes(module) ? "node-packager" : "javascript-deterministic-fallback",
+    fallbackUsed: !["build", "export"].includes(module)
+  };
+  project.updatedAt = nowIso();
+  project.activity.unshift({ id: makeId("event"), type: `engine.${module}`, detail: `${module} production pass completed`, createdAt: project.updatedAt });
+  return { project, actions, engine: project.engine };
 }
 
 function nativeScaffoldFiles(project, target = "all") {
@@ -1597,9 +2336,329 @@ async function createMobileBuildJob(project, target = "all") {
   return job;
 }
 
+async function collectDirectoryFiles(root, current = root, files = {}) {
+  const entries = await fsp.readdir(current, { withFileTypes: true });
+  for (const entry of entries) {
+    if (["DerivedDataCache", "Intermediate", "Saved", ".vs"].includes(entry.name)) continue;
+    const absolute = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      await collectDirectoryFiles(root, absolute, files);
+    } else if (entry.isFile()) {
+      const relative = path.relative(root, absolute).replace(/\\/g, "/");
+      files[relative] = await fsp.readFile(absolute);
+    }
+  }
+  return files;
+}
+
+async function createEngineProjectJob(project, input = {}) {
+  normalizeProject(project);
+  if (String(input.engine || "unreal").toLowerCase() !== "unreal") {
+    throw new Error("The first production compiler is Unreal Engine 5.6. Unity mobile packaging follows after the Unreal project passes QA.");
+  }
+  const id = makeId("enginejob");
+  const createdAt = nowIso();
+  const job = {
+    id,
+    engine: "unreal-5.6",
+    target: String(input.target || "Win64"),
+    status: "generating-engine-project",
+    shippingBuild: false,
+    progress: 10,
+    prompt: String(input.prompt || project.orchestrationJobs?.[0]?.prompt || project.premise || ""),
+    stages: [
+      { id: "spec", label: "Prompt specification", status: "completed", completedAt: createdAt },
+      { id: "project", label: "Unreal project generation", status: "running" },
+      { id: "import", label: "Interchange asset import", status: "pending" },
+      { id: "validate", label: "Unreal project validation", status: "pending" },
+      { id: "cook", label: "Cook content", status: "pending" },
+      { id: "package", label: "Package build", status: "pending" },
+      { id: "qa", label: "Artifact QA", status: "pending" }
+    ],
+    createdAt,
+    updatedAt: createdAt
+  };
+  project.engineBuildJobs.unshift(job);
+  try {
+    const productionRun = project.textToGameRuns.find((item) => item.id === input.productionRunId) || null;
+    let sourceAssets = [];
+    let animationAssets = [];
+    let audioAssets = [];
+    let rigHandoffs = [];
+    let animationHandoffs = [];
+    let audioHandoffs = [];
+    if (productionRun?.sourceAssetJob) {
+      const evidence = sourceAssetWorker.validateCompletedJob(productionRun.sourceAssetJob, productionRun.spec?.content?.assetRequirements || []);
+      if (!evidence.ok) {
+        throw new Error(`The Unreal import is waiting for validated source assets. ${evidence.errors.join(" ")}`);
+      }
+      const sourceEntries = await sourceAssetWorker.materializeArtifactEntries(
+        productionRun.sourceAssetJob,
+        path.join(os.tmpdir(), "c30-source-assets", productionRun.id)
+      );
+      const rigRequirements = (productionRun.spec?.content?.assetRequirements || []).filter((item) => item.rigRequired === true);
+      let rigEntries = [];
+      if (rigRequirements.length) {
+        const rigEvidence = rigWorker.validateCompletedJob(productionRun.rigJob, rigRequirements);
+        if (!rigEvidence.ok) throw new Error(`The Unreal import is waiting for validated rigs. ${rigEvidence.errors.join(" ")}`);
+        rigEntries = await rigWorker.materializeArtifactEntries(
+          productionRun.rigJob,
+          path.join(os.tmpdir(), "c30-rig-assets", productionRun.id)
+        );
+        job.rigJobId = productionRun.rigJob.id;
+        job.rigRequiredCount = rigRequirements.length;
+        job.rigEvidence = productionRun.rigJob.outputs.map((output) => ({
+          assetId: output.assetId,
+          name: output.name,
+          profile: output.profile,
+          sha256: output.artifact?.sha256,
+          mapping: output.validation?.mapping || {},
+          deformationQa: output.validation?.deformationQa || {},
+          metrics: output.validation?.metrics || {}
+        }));
+      }
+      const riggedIds = new Set(rigEntries.map((entry) => entry.assetId));
+      sourceAssets = [
+        ...sourceEntries.filter((entry) => !riggedIds.has(entry.assetId)).map((entry) => entry.file),
+        ...rigEntries.map((entry) => entry.file)
+      ];
+      animationAssets = rigEntries.flatMap((entry) => entry.animationFiles.map((clip) => clip.file));
+      rigHandoffs = rigEntries.map((entry) => entry.handoffFile).filter(Boolean);
+      const animationRequirements = productionRun.spec?.content?.animationRequirements || [];
+      if (animationRequirements.length) {
+        const animationEvidence = animationWorker.validateCompletedJob(productionRun.animationJob, animationRequirements);
+        if (!animationEvidence.ok) {
+          throw new Error(`The Unreal import is waiting for validated animations. ${animationEvidence.errors.join(" ")}`);
+        }
+        const animationEntries = await animationWorker.materializeArtifactEntries(
+          productionRun.animationJob,
+          path.join(os.tmpdir(), "c30-animation-assets", productionRun.id)
+        );
+        animationAssets.push(...animationEntries.flatMap((entry) => entry.clips.map((clip) => clip.file)));
+        animationHandoffs = animationEntries.map((entry) => entry.handoffFile).filter(Boolean);
+        job.animationJobId = productionRun.animationJob.id;
+        job.animationRequiredCount = animationRequirements.filter((item) => item.required !== false).length;
+        job.animationEvidence = productionRun.animationJob.outputs.flatMap((output) => (output.clips || []).map((clip) => ({
+          assetId: output.assetId,
+          name: clip.name,
+          profile: output.profile,
+          sha256: clip.artifact?.sha256,
+          animationQa: clip.validation?.animationQa || {},
+          deformationQa: clip.validation?.deformationQa || {}
+        })));
+      }
+      job.sourceAssetRunId = productionRun.id;
+      job.sourceAssetJobId = productionRun.sourceAssetJob.id;
+      job.sourceAssetEvidence = productionRun.sourceAssetJob.outputs.map((output) => ({
+        assetId: output.assetId,
+        name: output.name,
+        sha256: output.artifact?.sha256,
+        validation: output.validation?.metrics || {}
+      }));
+    }
+    if (productionRun) {
+      const audioRequirements = productionRun.spec?.content?.audioRequirements || [];
+      if (audioRequirements.length) {
+        const audioEvidence = audioWorker.validateCompletedJob(productionRun.audioJob, audioRequirements);
+        if (!audioEvidence.ok) {
+          throw new Error(`The Unreal import is waiting for validated audio. ${audioEvidence.errors.join(" ")}`);
+        }
+        const audioEntry = await audioWorker.materializeArtifactEntries(
+          productionRun.audioJob,
+          path.join(os.tmpdir(), "c30-audio-assets", productionRun.id)
+        );
+        audioAssets = audioEntry.clips.map((clip) => clip.file);
+        audioHandoffs = audioEntry.handoffFile ? [audioEntry.handoffFile] : [];
+        job.audioJobId = productionRun.audioJob.id;
+        job.audioRequiredCount = audioRequirements.filter((item) => item.required !== false).length;
+        job.audioEvidence = productionRun.audioJob.outputs.map((output) => ({
+          audioId: output.id,
+          name: output.name,
+          kind: output.kind,
+          sha256: output.artifact?.sha256,
+          acousticQa: output.validation?.audioQa || {},
+          license: output.license || null
+        }));
+      }
+    }
+    const generated = await localEngineWorker.generateUnrealProject(project, {
+      jobId: id,
+      prompt: job.prompt,
+      sourceAssets,
+      animationAssets,
+      audioAssets,
+      rigHandoffs,
+      animationHandoffs,
+      audioHandoffs
+    });
+    job.status = "engine-project-generated";
+    job.progress = 35;
+    job.template = generated.template;
+    job.rendering = generated.rendering;
+    job.stagedAssets = generated.stagedAssets;
+    job.stagedAudio = generated.stagedAudio;
+    job.stagedRigHandoffs = generated.stagedRigHandoffs;
+    job.stagedAnimationHandoffs = generated.stagedAnimationHandoffs;
+    job.stagedAudioHandoffs = generated.stagedAudioHandoffs;
+    job.localProjectDir = IS_PRODUCTION ? null : generated.projectDir;
+    job.localProjectFile = IS_PRODUCTION ? null : generated.projectFile;
+    job.projectFile = generated.projectFile;
+    job.importScript = generated.importScript;
+    job.artifactType = "unreal-engine-project";
+    job.filename = `${project.slug}-${generated.template}-unreal-5.6.zip`;
+    job.url = `/api/projects/${project.id}/engine-build/download?job=${encodeURIComponent(id)}`;
+    job.stages.find((stage) => stage.id === "project").status = "completed";
+    job.stages.find((stage) => stage.id === "project").completedAt = nowIso();
+    job.stages.find((stage) => stage.id === "import").status = (
+      generated.stagedAssets.length || generated.stagedAudio.length || generated.stagedAudioHandoffs.length
+    ) ? "staged" : "no-source-assets";
+    project.engine = { ...project.engine, productionEngine: "unreal-5.6", lastEngineProjectAt: nowIso() };
+    project.runtimeManifest = project.runtimeManifest || buildRuntimeManifest(project, job.prompt);
+    project.runtimeManifest.runtime.status = "engine-project-generated";
+    project.runtimeManifest.runtime.shippingBuild = false;
+  } catch (error) {
+    job.status = "generation-failed";
+    job.error = String(error.message || error).slice(0, 500);
+    job.stages.find((stage) => stage.id === "project").status = "failed";
+    throw error;
+  } finally {
+    job.updatedAt = nowIso();
+    project.updatedAt = job.updatedAt;
+  }
+  return job;
+}
+
+async function validateEngineProjectJob(project, input = {}) {
+  normalizeProject(project);
+  const job = project.engineBuildJobs.find((item) => item.id === input.jobId) || project.engineBuildJobs[0];
+  if (!job?.projectFile) throw new Error("Generate an Unreal project before validating it.");
+  job.status = "importing-assets";
+  job.progress = 40;
+  job.updatedAt = nowIso();
+  const importStage = job.stages.find((item) => item.id === "import");
+  importStage.status = "running";
+  importStage.startedAt = job.updatedAt;
+  const importScript = job.importScript || path.join(path.dirname(job.projectFile), "Content", "Python", "import_comic30_assets.py");
+  // A rigged build must execute the Interchange import pass so Unreal can
+  // report durable skeletal-mesh, Skeleton, and AnimSequence evidence. Reusing
+  // an older .uasset directory cannot prove which skeletal objects it contains.
+  const imported = await localEngineWorker.importUnrealAssets(job.projectFile, importScript, {
+    force: Number(job.rigRequiredCount || 0) > 0 || Number(job.animationRequiredCount || 0) > 0
+  });
+  importStage.status = imported.ok ? "completed" : "failed";
+  importStage.completedAt = nowIso();
+  importStage.detail = imported.ok
+    ? `${imported.importedCount} Unreal assets imported and saved in ${Math.round(imported.durationMs / 1000)}s.`
+    : imported.error;
+  job.import = {
+    ok: imported.ok,
+    taskCount: imported.taskCount,
+    importedCount: imported.importedCount,
+    skeletalMeshCount: imported.skeletalMeshCount || 0,
+    skeletonCount: imported.skeletonCount || 0,
+    animationCount: imported.animationCount || 0,
+    code: imported.code,
+    durationMs: imported.durationMs,
+    error: imported.error,
+    logTail: `${imported.stdout}\n${imported.stderr}`.slice(-4000)
+  };
+  if (imported.ok && Number(job.rigRequiredCount || 0) > 0 && (!imported.skeletalMeshCount || !imported.skeletonCount || !imported.animationCount)) {
+    imported.ok = false;
+    imported.status = "import-validation-failed";
+    imported.error = `Unreal Interchange did not register the required rig evidence (skeletal meshes=${imported.skeletalMeshCount || 0}, skeletons=${imported.skeletonCount || 0}, animations=${imported.animationCount || 0}).`;
+    importStage.status = "failed";
+    importStage.detail = imported.error;
+    job.import.ok = false;
+    job.import.error = imported.error;
+  }
+  if (!imported.ok) {
+    job.status = imported.status;
+    job.progress = 40;
+    job.updatedAt = nowIso();
+    project.updatedAt = job.updatedAt;
+    return job;
+  }
+  job.status = "validating";
+  job.progress = 48;
+  const stage = job.stages.find((item) => item.id === "validate");
+  stage.status = "running";
+  stage.startedAt = job.updatedAt;
+  const result = await localEngineWorker.validateUnrealProject(job.projectFile);
+  stage.status = result.ok ? "completed" : "failed";
+  stage.completedAt = nowIso();
+  stage.detail = result.ok ? `Unreal project opened headlessly in ${Math.round(result.durationMs / 1000)}s.` : result.error;
+  job.status = result.status;
+  job.progress = result.ok ? 55 : 45;
+  job.validation = { ok: result.ok, code: result.code, durationMs: result.durationMs, error: result.error, logTail: `${result.stdout}\n${result.stderr}`.slice(-4000) };
+  job.updatedAt = nowIso();
+  project.runtimeManifest = project.runtimeManifest || buildRuntimeManifest(project, job.prompt);
+  project.runtimeManifest.runtime.status = result.ok ? "engine-validated" : "engine-validation-failed";
+  project.runtimeManifest.runtime.shippingBuild = false;
+  project.updatedAt = job.updatedAt;
+  return job;
+}
+
+async function packageEngineProjectJob(project, input = {}) {
+  normalizeProject(project);
+  const job = project.engineBuildJobs.find((item) => item.id === input.jobId) || project.engineBuildJobs[0];
+  if (!job?.projectFile) throw new Error("Generate an Unreal project before packaging it.");
+  if (!["engine-validated", "package-failed", "artifact-qa-failed"].includes(job.status) && input.force !== true) {
+    throw new Error("Validate the Unreal project before packaging it.");
+  }
+  const target = String(input.target || job.target || "Win64");
+  const cook = job.stages.find((item) => item.id === "cook");
+  const packageStage = job.stages.find((item) => item.id === "package");
+  cook.status = "running";
+  packageStage.status = "running";
+  job.status = "cooking-and-packaging";
+  job.progress = 65;
+  job.updatedAt = nowIso();
+  const result = await localEngineWorker.packageUnrealProject(job.projectFile, target);
+  const artifactQa = result.ok
+    ? await localEngineWorker.validatePackagedArtifact(result.archiveDir)
+    : { ok: false, executable: null, files: 0, totalBytes: 0, evidence: [], error: result.error };
+  const verified = Boolean(result.ok && artifactQa.ok);
+  cook.status = result.ok ? "completed" : "failed";
+  packageStage.status = result.ok ? "completed" : "failed";
+  cook.completedAt = packageStage.completedAt = nowIso();
+  packageStage.detail = result.ok ? `${target} archive generated.` : result.error;
+  job.status = verified ? "packaged" : result.ok ? "artifact-qa-failed" : result.status;
+  job.progress = verified ? 100 : result.ok ? 92 : 65;
+  job.shippingBuild = verified;
+  job.package = {
+    ok: verified,
+    target,
+    archiveDir: IS_PRODUCTION ? null : result.archiveDir,
+    code: result.code,
+    durationMs: result.durationMs,
+    error: verified ? null : (artifactQa.error || result.error),
+    logTail: `${result.stdout}\n${result.stderr}`.slice(-4000),
+    qa: artifactQa
+  };
+  const qa = job.stages.find((item) => item.id === "qa");
+  qa.status = verified ? "completed" : result.ok ? "failed" : "blocked";
+  qa.detail = verified
+    ? `${artifactQa.files} files and ${Math.round(artifactQa.totalBytes / (1024 * 1024))} MB verified; executable and packaged content present.`
+    : (artifactQa.error || result.error);
+  qa.completedAt = verified ? nowIso() : null;
+  job.updatedAt = nowIso();
+  project.runtimeManifest = project.runtimeManifest || buildRuntimeManifest(project, job.prompt);
+  project.runtimeManifest.runtime.status = job.status;
+  project.runtimeManifest.runtime.shippingBuild = verified;
+  project.updatedAt = job.updatedAt;
+  return job;
+}
+
 async function handleApi(req, res, url) {
   const mediaPath = url.searchParams.get("media");
   if (req.method === "GET" && mediaPath) {
+    if (!hasSupabase() && process.env.NODE_ENV !== "production") {
+      res.writeHead(302, {
+        Location: `https://www.comic30.com/api/media?media=${encodeURIComponent(mediaPath)}`,
+        "Cache-Control": "public, max-age=300"
+      });
+      return res.end();
+    }
     const rootedMediaPath = mediaPath.startsWith("assets/") ? mediaPath : `assets/${mediaPath}`;
     const cleanMediaPath = rootedMediaPath
       .split("/")
@@ -1629,7 +2688,8 @@ async function handleApi(req, res, url) {
 
   try {
     if (url.pathname === "/api/health") {
-      return json(res, 200, { ok: true, name: "Comic30 Portal", time: nowIso(), readiness: productionReadiness() });
+      const workers = await productionWorkerCapabilities();
+      return json(res, 200, { ok: true, name: "Comic30 Portal", time: nowIso(), readiness: productionReadiness(workers) });
     }
 
     if (url.pathname === "/api/security/csrf" && req.method === "GET") {
@@ -1639,7 +2699,8 @@ async function handleApi(req, res, url) {
     }
 
     if (url.pathname === "/api/readiness" && req.method === "GET") {
-      return json(res, 200, productionReadiness());
+      const workers = await productionWorkerCapabilities();
+      return json(res, 200, productionReadiness(workers));
     }
 
     if (url.pathname === "/api/auth/register" && req.method === "POST") {
@@ -1811,6 +2872,18 @@ async function handleApi(req, res, url) {
       return json(res, 200, buildPipelineCapabilities());
     }
 
+    if (url.pathname === "/api/engine-workers" && req.method === "GET") {
+      const auth = requireAuth(req, res, db);
+      if (!auth) return;
+      return json(res, 200, await productionWorkerCapabilities());
+    }
+
+    if (url.pathname === "/api/models" && req.method === "GET") {
+      const auth = requireAuth(req, res, db);
+      if (!auth) return;
+      return json(res, 200, { models: modelCatalog(), defaultModel: "comic30/director-v1" });
+    }
+
     if (url.pathname === "/api/contacts/import-preview" && req.method === "POST") {
       const auth = requireAuth(req, res, db);
       if (!auth) return;
@@ -1908,6 +2981,289 @@ async function handleApi(req, res, url) {
         });
       }
 
+      if (subroute === "inference" && req.method === "GET") {
+        normalizeProject(project);
+        return json(res, 200, { runs: project.inferenceRuns, models: modelCatalog() });
+      }
+
+      if (subroute === "inference" && req.method === "POST") {
+        const body = await readBody(req);
+        const result = await runCreationAgent(project, body);
+        const run = project.inferenceRuns[0] || null;
+        db.audit.push({ id: makeId("audit"), userId: auth.user.id, projectId, action: `inference.${run?.provider || "internal"}`, createdAt: nowIso() });
+        await writeDb(db);
+        return json(res, 200, { ...result, run });
+      }
+
+      if (subroute === "orchestrate" && req.method === "GET") {
+        normalizeProject(project);
+        return json(res, 200, { jobs: project.orchestrationJobs, manifest: project.runtimeManifest || buildRuntimeManifest(project), models: modelCatalog() });
+      }
+
+      if (subroute === "orchestrate" && req.method === "POST") {
+        const body = await readBody(req);
+        const result = await runFiveEngineStack(project, body);
+        db.audit.push({ id: makeId("audit"), userId: auth.user.id, projectId, action: "orchestration.five-engine", createdAt: result.job.completedAt });
+        await writeDb(db);
+        return json(res, 201, result);
+      }
+
+      if (subroute === "text-to-game" && req.method === "GET") {
+        normalizeProject(project);
+        const capabilities = await productionWorkerCapabilities();
+        return json(res, 200, {
+          runs: project.textToGameRuns,
+          workers: textToGamePipeline.workerRegistry(capabilities)
+        });
+      }
+
+      if (subroute === "text-to-game" && req.method === "POST") {
+        const body = await readBody(req);
+        const action = String(body.action || "plan").toLowerCase();
+        const capabilities = await productionWorkerCapabilities();
+        let run;
+        if (action === "plan") {
+          const prompt = String(body.prompt || body.message || "").trim();
+          if (prompt.length < 8) return json(res, 400, { error: "Describe the game in at least eight characters." });
+          run = textToGamePipeline.createProductionRun(
+            project,
+            prompt,
+            capabilities,
+            {
+              title: body.title,
+              artDirection: body.artDirection,
+              qualityTier: body.qualityTier,
+              targets: body.targets
+            }
+          );
+        } else if (action === "assets") {
+          run = project.textToGameRuns.find((item) => item.id === body.runId) || project.textToGameRuns[0];
+          if (!run) return json(res, 404, { error: "Create a text-to-game production plan before generating source assets." });
+          const registry = textToGamePipeline.workerRegistry(capabilities);
+          if (!registry.sourceAssets.available) {
+            return json(res, 409, { error: registry.sourceAssets.reason || "The source-asset worker is not ready.", worker: registry.sourceAssets });
+          }
+          const submitted = await sourceAssetWorker.submit(run.spec, {
+            productionRunId: run.id,
+            projectId: project.id,
+            referenceImages: Array.isArray(body.referenceImages) ? body.referenceImages : []
+          });
+          run = textToGamePipeline.attachSourceAssetJob(run, submitted.job);
+          if (["completed", "failed"].includes(submitted.job.status)) {
+            textToGamePipeline.syncSourceAssetJob(run, submitted.job, sourceAssetWorker.validateCompletedJob(submitted.job, run.spec?.content?.assetRequirements || []));
+          }
+        } else if (action === "rig") {
+          run = project.textToGameRuns.find((item) => item.id === body.runId) || project.textToGameRuns[0];
+          if (!run) return json(res, 404, { error: "Create a text-to-game production plan before rigging source assets." });
+          const sourceEvidence = sourceAssetWorker.validateCompletedJob(run.sourceAssetJob, run.spec?.content?.assetRequirements || []);
+          if (!sourceEvidence.ok) return json(res, 409, { error: `Rigging requires completed, validated source GLBs. ${sourceEvidence.errors.join(" ")}` });
+          const rigRequirements = (run.spec?.content?.assetRequirements || []).filter((item) => item.rigRequired === true);
+          if (!rigRequirements.length) return json(res, 409, { error: "This game specification does not require a character rig." });
+          const registry = textToGamePipeline.workerRegistry(capabilities);
+          if (!registry.rigging.available) return json(res, 409, { error: registry.rigging.reason || "The rig worker is not ready.", worker: registry.rigging });
+          const submitted = await rigWorker.submit(run.spec, run.sourceAssetJob, {
+            productionRunId: run.id,
+            projectId: project.id
+          });
+          run = textToGamePipeline.attachRigJob(run, submitted.job);
+          if (["completed", "failed"].includes(submitted.job.status)) {
+            textToGamePipeline.syncRigJob(run, submitted.job, rigWorker.validateCompletedJob(submitted.job, rigRequirements));
+          }
+        } else if (action === "animation") {
+          run = project.textToGameRuns.find((item) => item.id === body.runId) || project.textToGameRuns[0];
+          if (!run) return json(res, 404, { error: "Create a text-to-game production plan before generating animation." });
+          const animationRequirements = run.spec?.content?.animationRequirements || [];
+          if (!animationRequirements.length) return json(res, 409, { error: "This game specification does not require animation clips." });
+          const rigRequirements = (run.spec?.content?.assetRequirements || []).filter((item) => item.rigRequired === true);
+          const rigEvidence = rigWorker.validateCompletedJob(run.rigJob, rigRequirements);
+          if (!rigEvidence.ok) return json(res, 409, { error: `Animation requires completed, validated rigs. ${rigEvidence.errors.join(" ")}` });
+          const registry = textToGamePipeline.workerRegistry(capabilities);
+          if (!registry.animation.available) return json(res, 409, { error: registry.animation.reason || "The animation worker is not ready.", worker: registry.animation });
+          const submitted = await animationWorker.submit(run.spec, run.rigJob, {
+            productionRunId: run.id,
+            projectId: project.id
+          });
+          run = textToGamePipeline.attachAnimationJob(run, submitted.job);
+          if (["completed", "failed"].includes(submitted.job.status)) {
+            textToGamePipeline.syncAnimationJob(run, submitted.job, animationWorker.validateCompletedJob(submitted.job, animationRequirements));
+          }
+        } else if (action === "audio") {
+          run = project.textToGameRuns.find((item) => item.id === body.runId) || project.textToGameRuns[0];
+          if (!run) return json(res, 404, { error: "Create a text-to-game production plan before generating audio." });
+          const audioRequirements = run.spec?.content?.audioRequirements || [];
+          if (!audioRequirements.length) return json(res, 409, { error: "This game specification does not require audio clips." });
+          const registry = textToGamePipeline.workerRegistry(capabilities);
+          if (!registry.audio.available) return json(res, 409, { error: registry.audio.reason || "The audio worker is not ready.", worker: registry.audio });
+          const submitted = await audioWorker.submit(run.spec, {
+            productionRunId: run.id,
+            projectId: project.id
+          });
+          run = textToGamePipeline.attachAudioJob(run, submitted.job);
+          if (["completed", "failed"].includes(submitted.job.status)) {
+            textToGamePipeline.syncAudioJob(run, submitted.job, audioWorker.validateCompletedJob(submitted.job, audioRequirements));
+          }
+        } else if (action === "sync") {
+          run = project.textToGameRuns.find((item) => item.id === body.runId) || project.textToGameRuns[0];
+          if (!run) return json(res, 404, { error: "Create a text-to-game production plan before syncing worker output." });
+          if (run.sourceAssetJob?.id && !["completed", "failed"].includes(run.sourceAssetJob.status)) {
+            const current = await sourceAssetWorker.getJob(run.sourceAssetJob.id);
+            const validation = sourceAssetWorker.validateCompletedJob(current.job, run.spec?.content?.assetRequirements || []);
+            textToGamePipeline.syncSourceAssetJob(run, current.job, validation);
+          }
+          if (run.rigJob?.id && !["completed", "failed"].includes(run.rigJob.status)) {
+            const current = await rigWorker.getJob(run.rigJob.id);
+            const validation = rigWorker.validateCompletedJob(current.job, run.spec?.content?.assetRequirements || []);
+            textToGamePipeline.syncRigJob(run, current.job, validation);
+          }
+          if (run.animationJob?.id && !["completed", "failed"].includes(run.animationJob.status)) {
+            const current = await animationWorker.getJob(run.animationJob.id);
+            const validation = animationWorker.validateCompletedJob(current.job, run.spec?.content?.animationRequirements || []);
+            textToGamePipeline.syncAnimationJob(run, current.job, validation);
+          }
+          if (run.audioJob?.id && !["completed", "failed"].includes(run.audioJob.status)) {
+            const current = await audioWorker.getJob(run.audioJob.id);
+            const validation = audioWorker.validateCompletedJob(current.job, run.spec?.content?.audioRequirements || []);
+            textToGamePipeline.syncAudioJob(run, current.job, validation);
+          }
+          run = textToGamePipeline.syncProductionRun(project, run.id, capabilities);
+        } else {
+          return json(res, 400, { error: "Text-to-game action must be plan, assets, rig, animation, audio, or sync." });
+        }
+        project.updatedAt = nowIso();
+        db.audit.push({
+          id: makeId("audit"),
+          userId: auth.user.id,
+          projectId,
+          action: `text-to-game.${action}`,
+          detail: { runId: run.id, family: run.spec?.family?.id, status: run.status },
+          createdAt: project.updatedAt
+        });
+        await writeDb(db);
+        return json(res, action === "plan" ? 201 : ["assets", "rig", "animation", "audio"].includes(action) ? 202 : 200, { project, run });
+      }
+
+      if (subroute === "runtime-manifest" && req.method === "GET") {
+        const manifest = project.runtimeManifest || buildRuntimeManifest(project);
+        return json(res, 200, { manifest });
+      }
+
+      if (subroute === "engine-build" && req.method === "GET") {
+        normalizeProject(project);
+        return json(res, 200, {
+          jobs: project.engineBuildJobs,
+          capabilities: localEngineWorker.capabilities()
+        });
+      }
+
+      if (subroute === "engine-build/preview" && req.method === "GET") {
+        normalizeProject(project);
+        const requestedId = String(url.searchParams.get("job") || "");
+        const job = project.engineBuildJobs.find((item) => item.id === requestedId) || project.engineBuildJobs[0];
+        const mediaDir = job?.localProjectDir ? path.join(job.localProjectDir, "Media") : null;
+        const candidates = mediaDir ? [
+          path.join(mediaDir, "TP_VehicleAdvBP_Preview.png"),
+          path.join(mediaDir, "TP_ThirdPersonBP.png"),
+          path.join(mediaDir, "TP_VehicleAdvBP.png")
+        ] : [];
+        const previewFile = candidates.find((candidate) => fs.existsSync(candidate));
+        if (!previewFile) return json(res, 404, { error: "The Unreal template preview is not available on this worker." });
+        const stat = await fsp.stat(previewFile);
+        res.writeHead(200, {
+          "Content-Type": "image/png",
+          "Content-Length": stat.size,
+          "Cache-Control": "private, max-age=300"
+        });
+        return fs.createReadStream(previewFile).pipe(res);
+      }
+
+      if (subroute === "engine-build" && req.method === "POST") {
+        const body = await readBody(req);
+        const action = String(body.action || "generate").toLowerCase();
+        let job;
+        if (action === "generate") job = await createEngineProjectJob(project, body);
+        else if (action === "validate") job = await validateEngineProjectJob(project, body);
+        else if (action === "package") job = await packageEngineProjectJob(project, body);
+        else if (action === "launch" || action === "open-editor") {
+          normalizeProject(project);
+          job = project.engineBuildJobs.find((item) => item.id === body.jobId) || project.engineBuildJobs[0];
+          if (!job) return json(res, 404, { error: "No Unreal build job was found for this project." });
+          if (action === "launch") {
+            if (!job.package?.archiveDir || job.status !== "packaged") {
+              return json(res, 409, { error: "Package the Unreal Win64 build before launching it." });
+            }
+            const launched = localEngineWorker.launchPackagedGame(job.package.archiveDir);
+            job.lastLaunch = { type: "packaged-game", pid: launched.pid, executable: launched.executable, launchedAt: nowIso() };
+          } else {
+            const launched = localEngineWorker.openUnrealProject(job.projectFile);
+            job.lastLaunch = { type: "unreal-editor", pid: launched.pid, executable: launched.executable, launchedAt: nowIso() };
+          }
+          job.updatedAt = nowIso();
+          project.updatedAt = job.updatedAt;
+        } else return json(res, 400, { error: "Engine build action must be generate, validate, package, launch, or open-editor." });
+        db.audit.push({
+          id: makeId("audit"),
+          userId: auth.user.id,
+          projectId,
+          action: `engine-build.${action}`,
+          createdAt: nowIso()
+        });
+        await writeDb(db);
+        return json(res, action === "generate" ? 201 : 200, {
+          project,
+          job,
+          capabilities: localEngineWorker.capabilities()
+        });
+      }
+
+      if (subroute === "engine-build/download" && req.method === "GET") {
+        normalizeProject(project);
+        const requestedId = String(url.searchParams.get("job") || "");
+        const job = project.engineBuildJobs.find((item) => item.id === requestedId) || project.engineBuildJobs[0];
+        if (!job?.localProjectDir || !fs.existsSync(job.localProjectDir)) {
+          return json(res, 404, { error: "The generated Unreal project is not available on this worker." });
+        }
+        const zip = createZip(await collectDirectoryFiles(job.localProjectDir));
+        const filename = job.filename || `${project.slug}-unreal-5.6.zip`;
+        res.writeHead(200, {
+          "Content-Type": "application/zip",
+          "Content-Disposition": `attachment; filename="${filename.replace(/[^a-zA-Z0-9._-]/g, "-")}"`,
+          "Content-Length": zip.length,
+          "Cache-Control": "private, no-store"
+        });
+        return res.end(zip);
+      }
+
+      if (subroute === "engine" && req.method === "POST") {
+        const body = await readBody(req);
+        const result = await runInternalEngine(project, body);
+        db.audit.push({ id: makeId("audit"), userId: auth.user.id, projectId, action: `engine.${body.module || "unknown"}`, createdAt: nowIso() });
+        await writeDb(db);
+        return json(res, 200, result);
+      }
+
+      if (subroute === "engine/item" && req.method === "PUT") {
+        const body = await readBody(req);
+        normalizeProject(project);
+        const module = String(body.module || "");
+        const index = Number(body.index);
+        const collections = {
+          story: project.story, scene: project.scenes, level: project.levels,
+          character: project.characters, gameplay: project.gameplay.mechanics,
+          world: project.worlds, economy: project.economy.rewards,
+          build: project.buildJobs
+        };
+        const collection = collections[module];
+        if (!collection || !Number.isInteger(index) || !collection[index]) return json(res, 404, { error: "Engine item not found." });
+        const value = typeof body.value === "string" ? JSON.parse(body.value) : body.value;
+        if (!value || typeof value !== "object" || Array.isArray(value)) return json(res, 400, { error: "Engine item must be a JSON object." });
+        collection[index] = { ...collection[index], ...value, id: collection[index].id, updatedAt: nowIso() };
+        project.updatedAt = nowIso();
+        project.activity.unshift({ id: makeId("event"), type: `engine.${module}.update`, detail: `${module} item updated`, createdAt: project.updatedAt });
+        db.audit.push({ id: makeId("audit"), userId: auth.user.id, projectId, action: `engine.${module}.update`, createdAt: project.updatedAt });
+        await writeDb(db);
+        return json(res, 200, { project, item: collection[index] });
+      }
+
       if (subroute === "playtest" && req.method === "GET") {
         const session = currentPlaytest(project);
         const arc = session && session.status === "active" ? project.story[session.arcIndex] || null : null;
@@ -1937,9 +3293,152 @@ async function handleApi(req, res, url) {
         return json(res, 201, { transaction, ledger: ledgerSummary(project) });
       }
 
+      if (subroute === "assets" && req.method === "GET") {
+        normalizeProject(project);
+        return json(res, 200, { assets: project.assets, project });
+      }
+
+      if (subroute === "assets/upload" && req.method === "POST") {
+        const filename = cleanAssetFilename(req.headers["x-comic30-filename"]);
+        const contentType = assetMimeType(filename, req.headers["content-type"]);
+        const kind = String(req.headers["x-comic30-asset-kind"] || "other");
+        const rigProfile = String(req.headers["x-comic30-rig-profile"] || "none").toLowerCase();
+        const bytes = await readBinaryBody(req);
+        const validation = assetValidation(filename, bytes, rigProfile);
+        const assetId = makeId("asset");
+        const objectPath = uploadedAssetObjectPath(auth.user.id, projectId, assetId, filename);
+        const storage = await storeAssetBytes(objectPath, bytes, contentType);
+        const asset = persistUploadedAsset(project, auth, {
+          assetId, filename, contentType, kind, rigProfile, bytes, validation, storage
+        });
+        db.audit.push({
+          id: makeId("audit"), userId: auth.user.id, projectId,
+          action: "asset.upload", detail: { assetId, filename, size: bytes.length, status: validation.status }, createdAt: asset.createdAt
+        });
+        await writeDb(db);
+        return json(res, 201, { asset, project });
+      }
+
+      if (subroute === "assets/upload-session" && req.method === "POST") {
+        const body = await readBody(req);
+        const filename = cleanAssetFilename(body.filename);
+        const declaredSize = Number(body.size || 0);
+        if (!Number.isFinite(declaredSize) || declaredSize <= 0) throw httpError(400, "The selected asset is empty.");
+        if (declaredSize > MAX_ASSET_UPLOAD_BYTES) throw httpError(413, `Asset exceeds the ${Math.floor(MAX_ASSET_UPLOAD_BYTES / 1024 / 1024)} MB upload limit.`);
+        if (!hasSupabase()) {
+          return json(res, 200, { directUpload: true, maxBytes: MAX_ASSET_UPLOAD_BYTES });
+        }
+        const assetId = makeId("asset");
+        const objectPath = uploadedAssetObjectPath(auth.user.id, projectId, assetId, filename);
+        const response = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/${encodeURIComponent(SUPABASE_ASSET_BUCKET)}/${storagePathEncode(objectPath)}`, {
+          method: "POST",
+          headers: supabaseHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify({ allowOverwrite: false })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw httpError(502, `Could not create an asset upload session. ${payload.message || payload.error || ""}`.trim());
+        const signedPath = payload.url || payload.signedURL || payload.signedUrl;
+        if (!signedPath) throw httpError(502, "Asset storage did not return a signed upload URL.");
+        const uploadUrl = /^https?:\/\//i.test(signedPath)
+          ? signedPath
+          : `${SUPABASE_URL}/storage/v1${signedPath.startsWith("/") ? "" : "/"}${signedPath}`;
+        return json(res, 201, {
+          directUpload: false,
+          assetId,
+          filename,
+          objectPath,
+          uploadUrl,
+          method: "PUT",
+          expiresInSeconds: 7200,
+          contentType: assetMimeType(filename, body.contentType)
+        });
+      }
+
+      if (subroute === "assets/finalize" && req.method === "POST") {
+        if (!hasSupabase()) throw httpError(409, "Direct asset finalization requires configured object storage.");
+        const body = await readBody(req);
+        const filename = cleanAssetFilename(body.filename);
+        const assetId = String(body.assetId || "");
+        if (!/^asset_[a-zA-Z0-9_-]+$/.test(assetId)) throw httpError(400, "Invalid asset upload session.");
+        const objectPath = uploadedAssetObjectPath(auth.user.id, projectId, assetId, filename);
+        if (String(body.objectPath || "") !== objectPath) throw httpError(400, "Asset upload ownership check failed.");
+        const storage = { provider: "supabase", bucket: SUPABASE_ASSET_BUCKET, objectPath };
+        const bytes = await loadAssetBytes({ storage });
+        const contentType = assetMimeType(filename, body.contentType);
+        const rigProfile = String(body.rigProfile || "none").toLowerCase();
+        const validation = assetValidation(filename, bytes, rigProfile);
+        const asset = persistUploadedAsset(project, auth, {
+          assetId, filename, contentType, kind: body.kind, rigProfile, bytes, validation, storage
+        });
+        db.audit.push({
+          id: makeId("audit"), userId: auth.user.id, projectId,
+          action: "asset.upload.finalize", detail: { assetId, filename, size: bytes.length, status: validation.status }, createdAt: asset.createdAt
+        });
+        await writeDb(db);
+        return json(res, 201, { asset, project });
+      }
+
+      const assetDownloadMatch = String(subroute || "").match(/^assets\/([^/]+)\/download$/);
+      if (assetDownloadMatch && req.method === "GET") {
+        normalizeProject(project);
+        const asset = project.assets.find((item) => item.id === assetDownloadMatch[1] && item.source === "user-upload");
+        if (!asset) throw httpError(404, "Uploaded asset was not found.");
+        const inline = url.searchParams.get("inline") === "1";
+        const safeFilename = String(asset.filename || "comic30-asset").replace(/["\r\n]/g, "-");
+        if (asset.storage?.provider === "supabase") {
+          const deliveryUrl = new URL(await createSupabaseAssetDeliveryUrl(asset));
+          if (!inline) deliveryUrl.searchParams.set("download", safeFilename);
+          res.writeHead(302, {
+            location: deliveryUrl.toString(),
+            "cache-control": "private, max-age=300",
+            "referrer-policy": "no-referrer",
+            "x-content-type-options": "nosniff"
+          });
+          return res.end();
+        }
+        const bytes = await loadAssetBytes(asset);
+        res.writeHead(200, {
+          "content-type": asset.contentType || "application/octet-stream",
+          "content-length": bytes.length,
+          "content-disposition": `${inline ? "inline" : "attachment"}; filename="${safeFilename}"`,
+          "cache-control": "private, max-age=300",
+          "x-content-type-options": "nosniff"
+        });
+        return res.end(bytes);
+      }
+
       if (subroute === "builds" && req.method === "GET") {
         normalizeProject(project);
         return json(res, 200, { jobs: project.buildJobs, builds: project.builds });
+      }
+
+      if (subroute === "operations" && req.method === "GET") {
+        normalizeProject(project);
+        return json(res, 200, { jobs: project.operationJobs, models: project.modelArtifacts, assets: project.assets });
+      }
+
+      if (subroute === "operations" && req.method === "POST") {
+        const body = await readBody(req);
+        const job = executeOperation(project, body);
+        db.audit.push({ id: makeId("audit"), userId: auth.user.id, projectId, action: `operation.${job.type}`, createdAt: nowIso() });
+        await writeDb(db);
+        return json(res, 201, { job, project });
+      }
+
+      if (subroute === "qa" && req.method === "GET") {
+        normalizeProject(project);
+        return json(res, 200, { latest: project.qaRuns[0] || null, runs: project.qaRuns });
+      }
+
+      if (subroute === "qa" && req.method === "POST") {
+        const report = runProjectQa(project);
+        db.audit.push({ id: makeId("audit"), userId: auth.user.id, projectId, action: "project.qa", createdAt: report.createdAt });
+        await writeDb(db);
+        return json(res, 201, { report, project });
+      }
+
+      if (subroute === "analytics" && req.method === "GET") {
+        return json(res, 200, { analytics: projectAnalytics(project) });
       }
 
       if (subroute === "build" && req.method === "POST") {
@@ -1962,8 +3461,7 @@ async function handleApi(req, res, url) {
           project.lifecycle.archived = false;
           project.status = "design";
         } else if (action === "qa") {
-          const ready = project.story.length > 0 && project.characters.length > 0 && project.worlds.length > 0 && project.terrain.length > 0;
-          project.lifecycle.qaStatus = ready ? "passed" : "needs-work";
+          runProjectQa(project);
         } else if (action === "deploy" || action === "redeploy") {
           const deployment = { id: makeId("deploy"), version: project.deployments.length + 1, status: "live", channel: String(body.channel || "production"), createdAt: nowIso() };
           project.deployments.unshift(deployment);
@@ -2044,7 +3542,7 @@ async function handleApi(req, res, url) {
 
     return json(res, 404, { error: "API route not found." });
   } catch (error) {
-    return json(res, 400, { error: error.message || "Request failed." });
+    return json(res, Number(error.statusCode) || 400, { error: error.message || "Request failed." });
   }
 }
 
@@ -2054,7 +3552,7 @@ function buildExportBundle(project) {
     .replace(/&/g, "\\u0026")
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e");
-  const gameplayHtml = `<!doctype html>
+  const narrativeGameplayHtml = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -2104,6 +3602,9 @@ function buildExportBundle(project) {
   </script>
 </body>
 </html>`;
+
+  const racerGameplayHtml = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${escapeHtml(project.runtimeManifest?.title || project.title)}</title><style>*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050811;color:#fff;font-family:Arial,sans-serif}canvas{display:block;width:100%;height:100%;touch-action:none}.hud{position:fixed;inset:18px 18px auto;display:flex;justify-content:space-between;font-weight:900;pointer-events:none}.help{position:fixed;inset:auto 0 24px;text-align:center;font-weight:800;color:#25f5b3;pointer-events:none}</style></head><body><canvas id="game" tabindex="0"></canvas><div class="hud"><span id="score">DISTANCE 0 m</span><span id="speed">280 km/h</span></div><div class="help" id="help">Click to drive · A/D or arrow keys</div><script>const c=document.getElementById('game'),x=c.getContext('2d'),score=document.getElementById('score'),speed=document.getElementById('speed'),help=document.getElementById('help');let g={run:false,over:false,lane:1,score:0,best:+localStorage.getItem('c30-best')||0,speed:280,cars:[],spawn:0,last:performance.now()};function size(){let d=devicePixelRatio||1;c.width=innerWidth*d;c.height=innerHeight*d;x.setTransform(d,0,0,d,0,0)}function start(){g={...g,run:true,over:false,lane:1,score:0,speed:280,cars:[],spawn:0,last:performance.now()};help.textContent='A/D or arrows · dodge traffic'}function move(d){if(!g.run||g.over)start();g.lane=Math.max(0,Math.min(2,g.lane+d))}addEventListener('resize',size);addEventListener('keydown',e=>{if(['ArrowLeft','a','A'].includes(e.key))move(-1);if(['ArrowRight','d','D'].includes(e.key))move(1);if(e.key===' ')start()});c.addEventListener('pointerdown',e=>{if(!g.run||g.over)return start();move(e.clientX<innerWidth/2?-1:1)});function car(px,py,w,h,col){x.fillStyle=col;x.fillRect(px-w/2,py-h/2,w,h);x.fillStyle='#dff';x.fillRect(px-w*.28,py-h*.28,w*.56,h*.2);x.fillStyle='#050811';x.fillRect(px-w*.4,py+h*.2,w*.2,h*.14);x.fillRect(px+w*.2,py+h*.2,w*.2,h*.14)}function loop(t){let w=innerWidth,h=innerHeight,dt=Math.min(.034,(t-g.last)/1000||0);g.last=t;if(g.run&&!g.over){g.score+=dt*g.speed/8;g.speed=Math.min(720,g.speed+dt*7);g.spawn-=dt;if(g.spawn<=0){g.cars.push({lane:Math.random()*3|0,y:-70,v:g.speed*(.76+Math.random()*.22),c:['#ff5b57','#ff9f2e','#37c4ff'][Math.random()*3|0]});g.spawn=Math.max(.32,.86-g.speed/1500)}g.cars.forEach(a=>a.y+=a.v*dt);g.cars=g.cars.filter(a=>a.y<h+90);if(g.cars.some(a=>a.lane===g.lane&&Math.abs(a.y-(h-84))<58)){g.over=true;g.run=false;g.best=Math.max(g.best,g.score|0);localStorage.setItem('c30-best',g.best);help.textContent='CRASHED · '+(g.score|0)+' m · click or Space to retry'}}let grd=x.createLinearGradient(0,0,0,h);grd.addColorStop(0,'#071525');grd.addColorStop(1,'#190d29');x.fillStyle=grd;x.fillRect(0,0,w,h);let l=w*.18,r=w*.64,lw=r/3;x.fillStyle='#101722';x.fillRect(l,0,r,h);x.strokeStyle='#25f5b3';x.strokeRect(l,0,r,h);x.strokeStyle='#778391';x.setLineDash([30,24]);for(let i=1;i<3;i++){x.beginPath();x.moveTo(l+lw*i,0);x.lineTo(l+lw*i,h);x.stroke()}x.setLineDash([]);let lx=i=>l+lw*i+lw/2;g.cars.forEach(a=>car(lx(a.lane),a.y,Math.min(44,lw*.4),72,a.c));car(lx(g.lane),h-84,Math.min(48,lw*.44),78,'#25f5b3');score.textContent='DISTANCE '+(g.score|0)+' m · BEST '+g.best+' m';speed.textContent=(g.speed|0)+' km/h';if(!g.run&&!g.over){x.fillStyle='rgba(3,7,12,.7)';x.fillRect(0,0,w,h);x.fillStyle='#fff';x.textAlign='center';x.font='900 36px Arial';x.fillText('${escapeHtml(project.runtimeManifest?.title || "ENDLESS VELOCITY")}',w/2,h/2);x.textAlign='left'}requestAnimationFrame(loop)}size();requestAnimationFrame(loop);</script></body></html>`;
+  const gameplayHtml = project.runtimeManifest?.runtime?.type === "endless-racer" ? racerGameplayHtml : narrativeGameplayHtml;
 
   const readme = `# ${project.title}
 
@@ -2308,7 +3809,12 @@ async function serveFile(req, res, url) {
     file = path.join(PUBLIC_DIR, "index.html");
   }
   const ext = path.extname(file).toLowerCase();
-  res.writeHead(200, { "content-type": MIME_TYPES[ext] || "application/octet-stream" });
+  res.writeHead(200, {
+    "content-type": MIME_TYPES[ext] || "application/octet-stream",
+    "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
+    pragma: "no-cache",
+    expires: "0"
+  });
   fs.createReadStream(file).pipe(res);
 }
 

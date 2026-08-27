@@ -29,6 +29,13 @@ insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_typ
 values ('comic30-media', 'comic30-media', true, 52428800, array['video/mp4', 'video/webm', 'model/gltf-binary'])
 on conflict (id) do update set public = true, file_size_limit = 52428800;
 
+-- Private creator asset library. The service-role API creates short-lived signed
+-- upload sessions and performs validation before recording an asset in a project.
+-- No browser-facing Storage policies are added intentionally.
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('comic30-assets', 'comic30-assets', false, 262144000)
+on conflict (id) do update set public = false, file_size_limit = 262144000;
+
 create table if not exists users (
   id text primary key,
   name text not null,

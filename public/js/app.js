@@ -10,8 +10,23 @@
     previewArc: 0,
     previewResult: "",
     engineMode: "world",
+    builderStep: 0,
+    builderPanel: null,
+    modelCatalog: [],
+    selectedProvider: "internal",
+    selectedModel: "comic30/director-v1",
+    studioAnalytics: {},
     csrfToken: null
   };
+
+  const requestedPortalMode = new URLSearchParams(window.location.search).get("portal");
+  if (requestedPortalMode === "signin" || requestedPortalMode === "login") {
+    state.screen = "auth";
+    state.authMode = "login";
+  } else if (requestedPortalMode === "register" || requestedPortalMode === "start") {
+    state.screen = "auth";
+    state.authMode = "register";
+  }
 
   const app = document.getElementById("app");
   const accountActions = document.getElementById("account-actions");
@@ -225,9 +240,13 @@
 
   async function api(path, options) {
     const method = String((options && options.method) || "GET").toUpperCase();
+    const body = options?.body;
+    const isFormBody = typeof FormData !== "undefined" && body instanceof FormData;
+    const isBinaryBody = (typeof Blob !== "undefined" && body instanceof Blob)
+      || (typeof ArrayBuffer !== "undefined" && (body instanceof ArrayBuffer || ArrayBuffer.isView(body)));
     const config = {
       credentials: "same-origin",
-      headers: { "content-type": "application/json" },
+      headers: isFormBody || isBinaryBody ? {} : { "content-type": "application/json" },
       ...options
     };
     if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
@@ -236,7 +255,7 @@
         "x-csrf-token": await csrfToken()
       };
     }
-    if (config.body && typeof config.body !== "string") {
+    if (config.body && typeof config.body !== "string" && !isFormBody && !isBinaryBody) {
       config.body = JSON.stringify(config.body);
     }
     const response = await fetch(path, config);
@@ -283,7 +302,7 @@
     } catch {
       state.user = null;
       state.projects = [];
-      state.screen = "home";
+      state.screen = requestedPortalMode ? "auth" : "home";
     }
     render();
   }
@@ -293,6 +312,13 @@
     state.projects = data.projects || [];
     if (!state.currentProjectId && state.projects.length) {
       state.currentProjectId = state.projects[0].id;
+    }
+    try {
+      const catalog = await api("/api/models");
+      state.modelCatalog = catalog.models || [];
+      state.selectedModel = catalog.defaultModel || state.selectedModel;
+    } catch {
+      state.modelCatalog = [{ provider: "internal", id: "comic30/director-v1", name: "Comic30 Director", available: true }];
     }
   }
 
@@ -341,7 +367,7 @@
     const feed = engineModeFeed(state.engineMode);
     return `
       <section class="parallax-hero" id="experience" data-parallax-scene>
-        <video class="scene-video hero-autoplay-video" autoplay muted loop playsinline preload="auto">
+        <video class="scene-video hero-autoplay-video" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/space-game-hero.mp4" type="video/mp4">
         </video>
         <div class="scene-shade"></div>
@@ -383,30 +409,30 @@
       </section>
 
       <section class="parallax-scene scene-world" id="engine" data-parallax-scene>
-        <video class="scene-video" muted loop playsinline preload="metadata">
+        <video class="scene-video" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/space-game-world.mp4" type="video/mp4">
         </video>
-        <video class="scene-video-secondary terrain-backdrop-video" muted loop playsinline preload="metadata">
+        <video class="scene-video-secondary terrain-backdrop-video" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/space-game-battle.mp4" type="video/mp4">
         </video>
         <div class="scene-shade"></div>
         <div class="motion-overlay world-video-panel" aria-hidden="true">
-          <video muted loop playsinline preload="metadata">
+          <video muted loop playsinline preload="none">
             <source src="/api/media?media=videos/user/space-game-terrain.mp4" type="video/mp4">
           </video>
           <span>Realtime world pass</span>
           <div class="overlay-hud-lines"><i></i><i></i><i></i></div>
         </div>
         <div class="motion-overlay world-secondary-panel" aria-hidden="true">
-          <video muted loop playsinline preload="metadata">
+          <video muted loop playsinline preload="none">
             <source src="/api/media?media=videos/user/robot-run-candidate-a.mp4" type="video/mp4">
           </video>
           <span>Robot run sim</span>
           <div class="overlay-hud-lines"><i></i><i></i><i></i></div>
         </div>
         <div class="model-scene world-model-scene" aria-label="Generated game world with imported space station and aircraft assets">
-          <model-viewer class="scene-model world-station-model" src="/api/media?media=models/generated/space-station-scene.glb" alt="Generated space station environment" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.22" shadow-intensity="0.85" camera-orbit="-28deg 68deg 11m" field-of-view="48deg" loading="lazy"></model-viewer>
-          <model-viewer class="scene-model world-aircraft-model" src="/api/media?media=models/generated/e45-aircraft-clean.glb" alt="E-45 aircraft game asset" autoplay animation-name="Armature|Action" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.35" shadow-intensity="0.85" camera-orbit="36deg 72deg 58m" field-of-view="62deg" scale="0.08 0.08 0.08" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model world-station-model" data-src="/api/media?media=models/generated/space-station-scene.glb" alt="Generated space station environment" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.22" shadow-intensity="0.85" camera-orbit="-28deg 68deg 11m" field-of-view="48deg" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model world-aircraft-model" data-src="/api/media?media=models/generated/e45-aircraft-clean.glb" alt="E-45 aircraft game asset" autoplay animation-name="Armature|Action" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.35" shadow-intensity="0.85" camera-orbit="36deg 72deg 58m" field-of-view="62deg" scale="0.08 0.08 0.08" loading="lazy"></model-viewer>
           <div class="scene-model-hud world-model-hud">
             <span>World asset import</span>
             <strong>Station scene + aircraft rig</strong>
@@ -429,7 +455,7 @@
       </section>
 
       <section class="parallax-scene scene-role" data-parallax-scene>
-        <video class="scene-video" muted loop playsinline preload="metadata">
+        <video class="scene-video" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/robot-section-background.mp4" type="video/mp4">
         </video>
         <div class="scene-shade scene-shade-warm"></div>
@@ -437,7 +463,7 @@
           <div class="branch-graph scene-branch-graph">
             <i></i><i></i><i></i><i></i><i></i>
           </div>
-          <model-viewer class="scene-model neck-mech-model" src="/api/media?media=models/generated/neck-mech-walker.glb" alt="Animated neck mech walker boss rig" autoplay animation-name="Neck_Mech_Rig|Idel" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.12" shadow-intensity="1" camera-orbit="24deg 70deg 94m" field-of-view="45deg" scale="0.18 0.18 0.18" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model neck-mech-model" data-src="/api/media?media=models/generated/neck-mech-walker.glb" alt="Animated neck mech walker boss rig" autoplay animation-name="Neck_Mech_Rig|Idel" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.12" shadow-intensity="1" camera-orbit="24deg 70deg 94m" field-of-view="45deg" scale="0.18 0.18 0.18" loading="lazy"></model-viewer>
           <div class="scene-model-hud role-model-hud">
             <span>Branching logic live</span>
             <strong>Mech boss rig</strong>
@@ -459,12 +485,12 @@
       </section>
 
       <section class="parallax-scene scene-economy" data-parallax-scene>
-        <video class="scene-video" muted loop playsinline preload="metadata">
+        <video class="scene-video" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/space-game-battle.mp4" type="video/mp4">
         </video>
         <div class="scene-shade"></div>
         <div class="model-scene economy-model-scene" aria-label="Generated transport shuttle reward economy game scene">
-          <model-viewer class="scene-model shuttle-model-viewer" src="/api/media?media=models/generated/transport-shuttle.glb" alt="Rigged futuristic transport shuttle" autoplay animation-name="Armature|Shuttel_Fly_Animation" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.25" shadow-intensity="0.85" camera-orbit="-32deg 68deg 78m" field-of-view="46deg" scale="0.16 0.16 0.16" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model shuttle-model-viewer" data-src="/api/media?media=models/generated/transport-shuttle.glb" alt="Rigged futuristic transport shuttle" autoplay animation-name="Armature|Shuttel_Fly_Animation" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.25" shadow-intensity="0.85" camera-orbit="-32deg 68deg 78m" field-of-view="46deg" scale="0.16 0.16 0.16" loading="lazy"></model-viewer>
           <div class="shuttle-path"><i></i><i></i><i></i></div>
           <div class="economy-store-hud">
             <b>Asset Forge</b>
@@ -514,12 +540,12 @@
       </section>
 
       <section class="parallax-scene scene-export" data-parallax-scene>
-        <video class="scene-video" muted loop playsinline preload="metadata">
+        <video class="scene-video" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/space-game-launch.mp4" type="video/mp4">
         </video>
         <div class="scene-shade scene-shade-deep"></div>
         <div class="model-scene export-model-scene" aria-label="Generated mobile deployment game asset scene">
-          <model-viewer class="scene-model five-wheeler-model" src="/api/media?media=models/generated/five-wheeler.glb" alt="Animated futuristic five-wheeler deployment asset" autoplay animation-name="Five Wheeler|Idel" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.2" shadow-intensity="1" camera-orbit="32deg 70deg 116m" field-of-view="45deg" scale="0.14 0.14 0.14" loading="lazy"></model-viewer>
+          <model-viewer class="scene-model five-wheeler-model" data-src="/api/media?media=models/generated/five-wheeler.glb" alt="Animated futuristic five-wheeler deployment asset" autoplay animation-name="Five Wheeler|Idel" auto-rotate camera-controls disable-zoom interaction-prompt="none" exposure="1.2" shadow-intensity="1" camera-orbit="32deg 70deg 116m" field-of-view="45deg" scale="0.14 0.14 0.14" loading="lazy"></model-viewer>
           <div class="scene-model-hud export-model-hud">
             <span>Audience deploy preview</span>
             <strong>Playable asset packaged</strong>
@@ -558,7 +584,7 @@
       </section>
 
       <section class="parallax-scene scene-start" id="studio" data-parallax-scene>
-        <video class="scene-video" muted loop playsinline preload="metadata">
+        <video class="scene-video" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/robot-branching-logic.mp4" type="video/mp4">
         </video>
         <div class="scene-shade scene-shade-start"></div>
@@ -595,14 +621,14 @@
     `;
   }
 
-  function renderAuthPage() {
+  function renderCheckpointAuthPage() {
     const isRegister = state.authMode === "register";
     return `
       <section class="auth-wrap auth-cinematic" data-parallax-scene>
-        <video class="scene-video auth-backdrop-video" autoplay muted loop playsinline preload="auto">
+        <video class="scene-video auth-backdrop-video" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/space-game-portal.mp4" type="video/mp4">
         </video>
-        <video class="scene-video-secondary" muted loop playsinline preload="metadata">
+        <video class="scene-video-secondary" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/space-game-launch.mp4" type="video/mp4">
         </video>
         <div class="scene-shade scene-shade-deep"></div>
@@ -657,7 +683,284 @@
     `;
   }
 
+  function builderStepIsComplete(project, module) {
+    const checks = {
+      story: (project.story || []).length > 0,
+      scene: (project.scenes || []).length > 0,
+      level: (project.levels || []).length > 0,
+      character: (project.characters || []).length > 0,
+      gameplay: (project.gameplay?.mechanics || []).length > 0,
+      world: (project.terrain || []).length > 0 && (project.worlds || []).length > 0,
+      economy: (project.economy?.iapProducts || []).length > 0,
+      build: (project.builds || []).length > 0 || (project.buildJobs || []).length > 0
+    };
+    return Boolean(checks[module]);
+  }
+
+  function renderBuilderCarousel(project, steps) {
+    const activeIndex = Math.max(0, Math.min(steps.length - 1, Number(state.builderStep || 0)));
+    const completeCount = steps.filter(([, module]) => builderStepIsComplete(project, module)).length;
+    return `
+      <section class="xgp-builder-journey" aria-label="Game creation steps">
+        <header class="xgp-journey-header">
+          <div>
+            <small>Step ${activeIndex + 1} of ${steps.length}</small>
+            <strong>${completeCount} completed</strong>
+          </div>
+          <div class="xgp-journey-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${steps.length}" aria-valuenow="${completeCount}">
+            <span style="width:${(completeCount / steps.length) * 100}%"></span>
+          </div>
+          <div class="xgp-journey-controls">
+            <button type="button" data-builder-nav="${activeIndex - 1}" ${activeIndex === 0 ? "disabled" : ""}>Previous</button>
+            <button type="button" data-builder-nav="${activeIndex + 1}" ${activeIndex === steps.length - 1 ? "disabled" : ""}>Next</button>
+          </div>
+        </header>
+        <div class="xgp-step-carousel" style="--builder-step:${activeIndex}">
+          ${steps.map(([label, module, metric], index) => {
+            const complete = builderStepIsComplete(project, module);
+            return `<article class="${index === activeIndex ? "is-active" : ""} ${complete ? "is-complete" : ""}" data-builder-step="${index}">
+              <button class="xgp-step-select" type="button" data-builder-nav="${index}" aria-label="Open ${xgpSafe(label)} step">
+                <span>${String(index + 1).padStart(2, "0")}</span>
+                <em>${complete ? "Complete" : index === activeIndex ? "Current step" : "Upcoming"}</em>
+              </button>
+              <strong>${xgpSafe(label)}</strong>
+              <small>${xgpSafe(metric)}</small>
+              <button type="button" data-builder-open="${module}" data-builder-index="${index}">${complete ? "View / Edit" : "Create / View"}</button>
+            </article>`;
+          }).join("")}
+        </div>
+      </section>
+      ${renderBuilderPanel(project, steps)}
+    `;
+  }
+
+  function builderModuleItems(project, module) {
+    if (module === "story") return project.story || [];
+    if (module === "scene") return project.scenes || [];
+    if (module === "level") return project.levels || [];
+    if (module === "character") return project.characters || [];
+    if (module === "gameplay") return project.gameplay?.mechanics || [];
+    if (module === "world") return project.worlds || [];
+    if (module === "economy") return project.economy?.rewards || [];
+    return project.buildJobs || [];
+  }
+
+  function builderToolConfig(module) {
+    const configs = {
+      story: { description: "Build narrative arcs, branching choices, quests, dialogue goals, and consequences.", fields: [["structure", "Story structure", ["Three-act campaign", "Hero journey", "Branching episodes", "Open-world quest chain"]], ["tone", "Tone", ["Cinematic", "Dark fantasy", "Hopeful adventure", "Comedy", "Mystery"]], ["length", "Campaign size", ["Short prototype", "8 missions", "20 missions", "Live seasonal"]]], recommendations: ["A three-act campaign with two meaningful choices per mission", "An episodic mystery where player loyalty changes the final boss", "An open-world faction story with repeatable quests"] },
+      scene: { description: "Compose playable scenes with cameras, objectives, triggers, lighting, audio, and transitions.", fields: [["sceneType", "Scene type", ["Playable encounter", "Exploration", "Dialogue", "Cinematic", "Tutorial"]], ["camera", "Camera", ["Third person", "First person", "Isometric", "Side scrolling", "Top down"]], ["lighting", "Lighting", ["Dynamic day/night", "Cinematic neon", "Natural daylight", "Horror low-light"]]], recommendations: ["A playable opening encounter that teaches movement and interaction", "A dialogue scene with three camera angles and a persistent choice", "A boss arena intro that transitions directly into gameplay"] },
+      level: { description: "Design level flow, encounters, checkpoints, navigation, difficulty, and completion rules.", fields: [["layout", "Layout", ["Linear cinematic", "Hub and spoke", "Open zone", "Dungeon rooms", "Endless procedural"]], ["difficulty", "Difficulty", ["Adaptive", "Casual", "Standard", "Hard", "Expert"]], ["duration", "Target duration", ["5 minutes", "10 minutes", "20 minutes", "45 minutes"]]], recommendations: ["A 10-minute tutorial level with three escalating encounters", "An open zone with two optional objectives and one extraction point", "A dungeon level with checkpoints, locked shortcuts, and a boss"] },
+      character: { description: "Create playable characters and NPCs with roles, abilities, rigs, animation sets, and behavior.", fields: [["role", "Character role", ["Playable hero", "Companion", "Enemy", "Boss", "Quest NPC", "Merchant"]], ["rig", "Rig type", ["Humanoid", "Quadruped", "Creature", "Vehicle", "2D skeletal"]], ["behavior", "Behavior", ["Player controlled", "Combat AI", "Companion AI", "Dialogue AI", "Ambient NPC"]]], recommendations: ["A playable hero with traversal, combat, interaction, and ultimate abilities", "A tactical companion whose loyalty unlocks new team abilities", "A multi-phase boss with readable telegraphs and breakable armor"] },
+      gameplay: { description: "Define player controls, mechanics, state machines, combat rules, scoring, and progression.", fields: [["system", "System", ["Combat", "Traversal", "Puzzle", "Dialogue", "Crafting", "Stealth"]], ["input", "Primary input", ["Touch controls", "Gamepad", "Keyboard and mouse", "Motion", "Hybrid"]], ["multiplayer", "Player mode", ["Single player", "Local co-op", "Online co-op", "Competitive multiplayer"]]], recommendations: ["Responsive mobile combat with dodge, light attack, heavy attack, and abilities", "Traversal with sprint, mantle, wall-run, and grapple state machines", "A cooperative objective system with shared rewards and revive rules"] },
+      world: { description: "Generate worlds and terrain with biomes, heightfields, streaming cells, navigation, weather, and spawn zones.", fields: [["biome", "Biome", ["Forest", "Desert", "City", "Alien planet", "Ocean", "Arctic", "Mixed"]], ["scale", "World scale", ["Arena", "Small level", "Open zone", "Open world"]], ["generation", "Terrain method", ["Heightfield", "Voxel", "Procedural tiles", "Hand-authored hybrid"]]], recommendations: ["A streaming open zone with forest, ruins, rivers, and navigation meshes", "A procedural alien terrain with three biomes and dynamic weather", "A dense vertical city with districts, interiors, and traversal routes"] },
+      economy: { description: "Design rewards, currencies, sinks, progression pacing, IAP boundaries, and store-safe balancing.", fields: [["economyType", "Economy model", ["Progression only", "Soft currency", "Dual currency", "Cosmetic store", "Battle pass"]], ["rewardPace", "Reward pace", ["Generous", "Balanced", "Long-term", "Competitive"]], ["monetization", "Monetization", ["None", "Premium game", "Cosmetic IAP", "Rewarded ads", "Subscription"]]], recommendations: ["A fair soft-currency loop with mission rewards and upgrade sinks", "A cosmetic-only store with no pay-to-win advantages", "A seasonal progression track with free and premium cosmetic rewards"] },
+      build: { description: "Configure validation, assets, renderer profiles, packaging, signing readiness, and mobile export targets.", fields: [["target", "Build target", ["Android AAB", "iOS Xcode archive", "Android and iOS", "Web preview"]], ["quality", "Quality profile", ["Mobile performance", "Balanced", "High fidelity"]], ["renderer", "Renderer", ["Vulkan 1.3", "Metal", "Vulkan + Metal", "WebGL preview"]]], recommendations: ["Package Android and iOS release projects with balanced mobile quality", "Create a Vulkan Android performance build with asset validation", "Create an iOS Metal archive profile with signing-readiness checks"] }
+    };
+    return configs[module] || configs.story;
+  }
+
+  function renderBuilderPanel(project, steps) {
+    const module = state.builderPanel;
+    if (!module) return "";
+    const stepIndex = steps.findIndex(([, key]) => key === module);
+    const label = steps[Math.max(0, stepIndex)]?.[0] || "Builder stage";
+    const items = builderModuleItems(project, module);
+    const config = builderToolConfig(module);
+    return `<div class="xgp-builder-modal-backdrop">
+      <section class="xgp-builder-modal" role="dialog" aria-modal="true" aria-label="${xgpSafe(label)} workspace">
+        <button class="xgp-builder-modal-close" type="button" data-builder-close aria-label="Close">&times;</button>
+        <header><small>Stage ${String(stepIndex + 1).padStart(2, "0")}</small><h2>${xgpSafe(label)}</h2><p>${xgpSafe(config.description)}</p></header>
+        <div class="xgp-builder-modal-layout">
+          <form class="xgp-builder-create-card" data-form="engine-create">
+            <input type="hidden" name="module" value="${module}">
+            <h3>Add ${xgpSafe(label)}</h3>
+            <div class="xgp-tool-options">${config.fields.map(([name, fieldLabel, options]) => `<label><span>${xgpSafe(fieldLabel)}</span><select name="${name}">${options.map(option => `<option>${xgpSafe(option)}</option>`).join("")}</select></label>`).join("")}</div>
+            <fieldset class="xgp-tool-recommendations"><legend>Recommended starting points</legend>${config.recommendations.map(text => `<button type="button" data-builder-recommend="${xgpSafe(text)}">${xgpSafe(text)}</button>`).join("")}</fieldset>
+            <label><span>AI-assisted direction <small>Optional: add details or use the selected options.</small></span><textarea name="prompt" placeholder="Describe anything specific you want to create..."></textarea></label>
+            <button type="submit">Create and save</button>
+          </form>
+          <div class="xgp-builder-library">
+            <div class="xgp-builder-library-heading"><h3>Existing ${xgpSafe(label)}</h3><span>${items.length} saved</span></div>
+            ${items.length ? items.map((item, index) => `<details><summary><span><strong>${xgpSafe(item.title || item.name || item.target || `${label} ${index + 1}`)}</strong><small>${xgpSafe(item.status || item.type || item.role || item.biome || "Saved project item")}</small></span><em>View / Edit</em></summary><form class="xgp-builder-edit-item" data-form="engine-update"><input type="hidden" name="module" value="${module}"><input type="hidden" name="index" value="${index}"><textarea name="value" aria-label="Edit ${xgpSafe(label)} JSON">${xgpSafe(JSON.stringify(item, null, 2))}</textarea><button type="submit">Save changes</button></form></details>`).join("") : `<div class="xgp-builder-empty"><strong>No ${xgpSafe(label).toLowerCase()} created yet.</strong><span>Create the first saved item using the form.</span></div>`}
+          </div>
+        </div>
+      </section>
+    </div>`;
+  }
+
+  function renderProjectOnboarding() {
+    return `
+      <section class="xgp-view xgp-onboarding">
+        <div class="xgp-section-heading">
+          <small>Internal Game Engine</small>
+          <h1>Create the active game project first.</h1>
+          <p>Comic30 will persist the blueprint, then guide you through all eight production steps.</p>
+        </div>
+        <form class="xgp-project-create" data-form="create-project">
+          <label><span>Game title</span><input name="title" required maxlength="80" placeholder="Neon Rift"></label>
+          <label><span>Genre</span><input name="genre" required maxlength="80" placeholder="Cinematic action RPG"></label>
+          <label><span>Audience</span><input name="audience" maxlength="120" placeholder="Mobile-first action players"></label>
+          <label><span>Art style</span><input name="artStyle" maxlength="120" placeholder="Stylized science-fiction realism"></label>
+          <label class="wide"><span>Game premise</span><textarea name="premise" required placeholder="Describe the player, world, conflict, and what makes the game playable."></textarea></label>
+          <button type="submit">Create project and start Step 1</button>
+        </form>
+      </section>
+    `;
+  }
+
+  function isVerifiedEngineJob(job) {
+    const requiredStages = ["spec", "project", "import", "validate", "cook", "package", "qa"];
+    return Boolean(
+      job?.status === "packaged" &&
+      job?.shippingBuild !== false &&
+      job?.package?.ok &&
+      requiredStages.every((id) => job.stages?.find((stage) => stage.id === id)?.status === "completed")
+    );
+  }
+
+  function renderProductionEnginePanel(project) {
+    const jobs = project.engineBuildJobs || [];
+    const currentJob = jobs[0];
+    const verifiedJob = jobs.find(isVerifiedEngineJob);
+    const displayJob = verifiedJob || currentJob;
+    const status = currentJob?.status || "not-generated";
+    const stages = currentJob?.stages || [
+      { id: "spec", label: "Prompt specification", status: "ready" },
+      { id: "project", label: "Unreal project generation", status: "ready" },
+      { id: "import", label: "Interchange asset import", status: "pending" },
+      { id: "validate", label: "Unreal project validation", status: "pending" },
+      { id: "cook", label: "Cook content", status: "pending" },
+      { id: "package", label: "Package Win64 build", status: "pending" },
+      { id: "qa", label: "Artifact QA", status: "pending" }
+    ];
+    const importedCount = Number(currentJob?.import?.importedCount || 0);
+    const canValidate = ["engine-project-generated", "validation-failed", "asset-import-failed"].includes(status);
+    const canPackage = ["engine-validated", "package-failed", "artifact-qa-failed"].includes(status);
+    const packaged = Boolean(verifiedJob);
+    const statusLabel = packaged ? "Verified build ready" : status === "engine-validated" ? "Ready to package" : status === "not-generated" ? "Not built" : status.replaceAll("-", " ");
+    const newerAttempt = Boolean(verifiedJob && currentJob && currentJob.id !== verifiedJob.id);
+    const currentAttemptLabel = status === "asset-import-failed" && importedCount
+      ? `${importedCount} imported assets detected · validation can resume`
+      : status.replaceAll("-", " ");
+    return `<section class="xgp-production-engine xgp-production-engine-output">
+      <div class="xgp-unreal-visual">
+        <img src="/assets/unreal-vehicle-preview.png" alt="Unreal Engine Advanced Vehicle template used by the verified Comic30 build">
+        <div><small>${packaged ? "VERIFIED UNREAL BUILD" : "UNREAL BUILD PIPELINE"}</small><strong>${xgpSafe(project.title)}</strong><span>${packaged ? "Win64 artifact passed real asset import, project validation, cook, package, and artifact QA." : "Generate, validate, cook, package, and verify the native project before it is marked playable."}</span></div>
+      </div>
+      <div class="xgp-production-engine-heading">
+        <div><small>Playable output</small><h2>Unreal Engine 5.6</h2><p>${packaged ? "Verified native Windows build with an editable Unreal project." : "Advanced Vehicle or Third Person · Chaos · Lumen · Virtual Shadow Maps · DX12/SM6"}</p></div>
+        <span class="xgp-build-status ${packaged ? "is-ready" : ""}">${xgpSafe(statusLabel)}</span>
+      </div>
+      <div class="xgp-production-actions">
+        ${packaged ? `<button type="button" class="is-launch" data-engine-build-action="launch" data-engine-job="${xgpSafe(verifiedJob.id)}">Launch verified Windows build</button>` : ""}
+        ${packaged && verifiedJob.projectFile ? `<button type="button" data-engine-build-action="open-editor" data-engine-job="${xgpSafe(verifiedJob.id)}">Open in Unreal Editor</button>` : ""}
+        ${packaged && verifiedJob.url ? `<a href="${xgpSafe(verifiedJob.url)}">Download verified build</a>` : ""}
+        ${!currentJob || status === "generation-failed" ? `<button type="button" data-engine-build-action="generate">Generate Unreal project</button>` : ""}
+        ${!newerAttempt && canValidate ? `<button type="button" data-engine-build-action="validate" data-engine-job="${xgpSafe(currentJob.id)}">Import assets + validate</button>` : ""}
+        ${!newerAttempt && canPackage ? `<button type="button" data-engine-build-action="package" data-engine-job="${xgpSafe(currentJob.id)}">Cook, package + verify</button>` : ""}
+      </div>
+      ${newerAttempt ? `<div class="xgp-current-engine-job"><div><small>Newer build request</small><strong>${xgpSafe(currentAttemptLabel)}</strong><span>${xgpSafe(currentJob.prompt || "Unreal production job")}</span></div><div class="xgp-production-actions">${canValidate ? `<button type="button" data-engine-build-action="validate" data-engine-job="${xgpSafe(currentJob.id)}">Resume import + validation</button>` : ""}${canPackage ? `<button type="button" data-engine-build-action="package" data-engine-job="${xgpSafe(currentJob.id)}">Cook, package + verify</button>` : ""}${currentJob.url ? `<a href="${xgpSafe(currentJob.url)}">Download working project</a>` : ""}</div></div>` : ""}
+      <p class="xgp-production-disclaimer">The verified game is a native Windows application and opens outside Chrome. “Open in Unreal Editor” opens the editable project. Running Unreal inside the portal requires a separately deployed Pixel Streaming host.</p>
+      <details class="xgp-engine-details"><summary>${newerAttempt ? "Newer build stages" : "Build details and validation"}</summary><div class="xgp-engine-stage-list">${stages.map((stage, index) => `<article class="is-${xgpSafe(stage.status)}"><span>${String(index + 1).padStart(2, "0")}</span><strong>${xgpSafe(stage.label)}</strong><small>${xgpSafe(stage.status)}</small></article>`).join("")}</div></details>
+    </section>`;
+  }
+
+  function formatAssetBytes(value) {
+    const bytes = Number(value || 0);
+    if (!bytes) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    return `${(bytes / (1024 ** exponent)).toFixed(exponent ? 1 : 0)} ${units[exponent]}`;
+  }
+
+  function deferredAssetPreview({ url, kind, name, animation = "" }) {
+    const label = kind === "model" ? "3D" : kind === "image" ? "IMAGE" : kind === "video" ? "VIDEO" : kind === "audio" ? "AUDIO" : "FILE";
+    return `<button type="button" class="xgp-asset-preview-trigger" data-asset-preview-src="${xgpSafe(url)}" data-asset-preview-kind="${xgpSafe(kind)}" data-asset-preview-name="${xgpSafe(name)}" ${animation ? `data-asset-preview-animation="${xgpSafe(animation)}"` : ""}>
+      <span>${label}</span><small>Click to load preview</small>
+    </button>`;
+  }
+
+  function uploadedAssetPreview(project, asset) {
+    const url = `/api/projects/${encodeURIComponent(project.id)}/assets/${encodeURIComponent(asset.id)}/download?inline=1`;
+    const contentType = String(asset.contentType || "").toLowerCase();
+    const extension = String(asset.extension || "").toLowerCase();
+    if (extension === ".glb") return deferredAssetPreview({ url, kind: "model", name: asset.name });
+    if (contentType.startsWith("image/")) return deferredAssetPreview({ url, kind: "image", name: asset.name });
+    if (contentType.startsWith("video/")) return deferredAssetPreview({ url, kind: "video", name: asset.name });
+    if (contentType.startsWith("audio/")) return deferredAssetPreview({ url, kind: "audio", name: asset.name });
+    return `<div class="xgp-asset-source-badge"><span>${xgpSafe(extension.slice(1).toUpperCase() || "FILE")}</span><small>${asset.kind === "package" ? "ENGINE PACKAGE" : "SOURCE ASSET"}</small></div>`;
+  }
+
+  function renderAssetProductionQueue(runtimeAssets, project) {
+    const jobs = project.engineBuildJobs || [];
+    const verifiedJob = jobs.find(isVerifiedEngineJob);
+    const importJob = verifiedJob || jobs.find((job) => Number(job?.import?.importedCount || 0) > 0) || jobs[0];
+    const imported = Number(importJob?.import?.importedCount || 0);
+    const packaged = Boolean(verifiedJob);
+    const uploadedAssets = (project.assets || []).filter((asset) => asset?.source === "user-upload");
+    const totalAssets = runtimeAssets.length + uploadedAssets.length;
+    return `<section class="xgp-asset-production">
+      <div><small>Visual asset review</small><strong>${totalAssets} assets in the active project library</strong><span>${imported ? `${imported} Unreal asset objects imported · ` : ""}Upload GLB, GLTF, FBX, OBJ, engine packages, textures, audio, or video. Comic30 validates each file before it enters the production library.</span></div>
+      <form class="xgp-asset-uploader" data-form="asset-upload">
+        <label class="xgp-asset-drop">
+          <input type="file" name="files" multiple required accept=".glb,.gltf,.fbx,.obj,.zip,.pak,.uasset,.umap,.unitypackage,.png,.jpg,.jpeg,.webp,.wav,.mp3,.ogg,.mp4,.webm">
+          <span><strong>Upload assets or packages</strong><small>Choose one or more files · up to 250 MB each</small></span>
+        </label>
+        <div class="xgp-upload-controls">
+          <label><span>Asset category</span><select name="kind"><option value="other">Auto / other</option><option value="character">Character</option><option value="vehicle">Vehicle</option><option value="environment">Environment</option><option value="prop">Prop</option><option value="animation">Animation</option><option value="texture">Texture</option><option value="audio">Audio</option><option value="package">Engine package</option></select></label>
+          <label><span>Rig validation</span><select name="rigProfile"><option value="none">No skeleton check</option><option value="humanoid">Humanoid</option><option value="creature">Creature</option><option value="vehicle">Vehicle</option></select></label>
+          <button type="submit">Upload + validate</button>
+        </div>
+        <output class="xgp-upload-selection" aria-live="polite">No files selected</output>
+      </form>
+      ${totalAssets ? `<div class="xgp-asset-reel">${runtimeAssets.map((asset) => `<article>
+        ${deferredAssetPreview({ url: asset.uri, kind: "model", name: asset.name, animation: asset.animations?.[0] || "" })}
+        <strong>${xgpSafe(asset.name)}</strong>
+        <small>${xgpSafe(asset.kind)} · ${packaged ? "packaged in Unreal" : xgpSafe(asset.status || "source catalogued")}</small>
+        <span>${asset.animations?.length ? `Animation: ${asset.animations.map(xgpSafe).join(" · ")}` : packaged ? "Mesh and material import completed" : "Mesh source ready for validation"}</span>
+      </article>`).join("")}${uploadedAssets.map((asset) => {
+        const validation = asset.validation || {};
+        const issueCount = (validation.issues || []).length;
+        const warningCount = (validation.warnings || []).length;
+        const downloadUrl = `/api/projects/${encodeURIComponent(project.id)}/assets/${encodeURIComponent(asset.id)}/download`;
+        return `<article class="xgp-uploaded-asset is-${xgpSafe(asset.status || "uploaded")}">
+          ${uploadedAssetPreview(project, asset)}
+          <strong>${xgpSafe(asset.name)}</strong>
+          <small>${xgpSafe(asset.kind || "asset")} · ${formatAssetBytes(asset.size)} · ${xgpSafe(asset.status || "uploaded")}</small>
+          <span>${issueCount ? `${issueCount} validation issue${issueCount === 1 ? "" : "s"}` : warningCount ? `${warningCount} validation warning${warningCount === 1 ? "" : "s"}` : "Server validation passed"}</span>
+          <div class="xgp-asset-actions"><a href="${xgpSafe(downloadUrl)}">Download</a><button type="button" data-asset-inspect="${xgpSafe(asset.id)}">View details</button></div>
+          <details><summary>Validation details</summary><div class="xgp-asset-validation"><span>SHA-256: ${xgpSafe(String(asset.checksum || "").slice(0, 16))}…</span>${Object.entries(validation.metrics || {}).slice(0, 6).map(([key, value]) => `<span>${xgpSafe(key)}: ${xgpSafe(value)}</span>`).join("")}${(validation.issues || []).map((item) => `<em class="is-issue">${xgpSafe(item)}</em>`).join("")}${(validation.warnings || []).map((item) => `<em>${xgpSafe(item)}</em>`).join("")}</div></details>
+        </article>`;
+      }).join("")}</div>` : `<div class="xgp-asset-empty"><strong>No assets in this project yet.</strong><span>Upload a source asset or generate a production pass to begin the library.</span></div>`}
+    </section>`;
+  }
+
+  function renderTextToGamePlan(project) {
+    const run = project.textToGameRuns?.[0];
+    if (!run) return `<section class="xgp-t2g-plan is-empty"><div><small>Production graph</small><strong>No compiled game specification yet</strong><span>Your next build request will be converted into a typed game specification and a worker-by-worker production plan before Unreal runs.</span></div></section>`;
+    const summary = run.summary || {};
+    const blockers = summary.blockers || [];
+    const nodes = run.graph || [];
+    return `<section class="xgp-t2g-plan">
+      <div class="xgp-t2g-summary">
+        <div><small>Text-to-game production graph</small><strong>${xgpSafe(run.spec?.family?.label || "Compiled game")}</strong><span>${xgpSafe(run.spec?.engine?.primary || "Unreal")} · ${xgpSafe(run.spec?.engine?.template || "template pending")} · ${(run.spec?.engine?.targets || []).map(xgpSafe).join(" / ")}</span></div>
+        <div class="xgp-t2g-readiness"><strong>${Number(summary.verifiedPercent || 0)}%</strong><span>production verified</span><em class="is-${xgpSafe(summary.status || "planned")}">${xgpSafe((summary.status || "planned").replaceAll("-", " "))}</em></div>
+      </div>
+      <div class="xgp-t2g-tracks"><span class="${summary.prototypeReady ? "is-ready" : ""}">Prototype ${summary.prototypeReady ? "verified" : "in progress"}</span><span class="${summary.status === "production-verified" ? "is-ready" : ""}">High-fidelity production ${summary.status === "production-verified" ? "verified" : "not verified"}</span></div>
+      ${blockers.length ? `<div class="xgp-t2g-blockers"><strong>${blockers.length} production blocker${blockers.length === 1 ? "" : "s"}</strong>${blockers.slice(0, 3).map(item => `<span><b>${xgpSafe(item.label)}</b>${xgpSafe(item.detail)}</span>`).join("")}</div>` : ""}
+      <details class="xgp-t2g-graph"><summary>View all ${nodes.length} production jobs</summary><div>${nodes.map((item, index) => `<article class="is-${xgpSafe(item.status)}"><span>${String(index + 1).padStart(2, "0")}</span><strong>${xgpSafe(item.label)}</strong><small>${xgpSafe(item.status)}</small></article>`).join("")}</div></details>
+    </section>`;
+  }
+
   function xgpFunctionalWorkspace(view, project) {
+    const hasProject = Boolean(project?.id);
+    project = project || {
+      title: "New game",
+      premise: "Create a project in the first Builder slide to begin.",
+      story: [], scenes: [], levels: [], characters: [], terrain: [], worlds: [],
+      gameplay: { mechanics: [] }, economy: { iapProducts: [], rewards: [], currencySymbol: "CR" },
+      builds: [], buildJobs: [], deployments: [], playtests: [], aiThreads: []
+    };
     const steps = [
       ["Story", "story", `${project.story?.length || 0} arcs`], ["Scenes", "scene", `${project.scenes?.length || 0} playable scenes`],
       ["Levels", "level", `${project.levels?.length || 0} levels`], ["Characters", "character", `${project.characters?.length || 0} cast`],
@@ -667,21 +970,60 @@
     const playtest = project.playtests?.find(session => session.status === "active") || project.playtests?.[0];
     const activeArc = playtest?.status === "active" ? project.story?.[playtest.arcIndex] : null;
     const playtestPanel = `<section class="xgp-playtest"><div class="xgp-section-heading"><small>Playable Runtime</small><h2>${playtest ? (playtest.status === "completed" ? "Playtest completed" : xgpSafe(activeArc?.title || "Resume playtest")) : "Start a real playtest"}</h2><p>${activeArc ? xgpSafe(activeArc.summary) : "Run the generated story graph with server-saved score, choices, progression, and rewards."}</p></div>${playtest ? `<div class="xgp-runtime-hud"><span>Node ${Math.min((playtest.arcIndex || 0) + 1, project.story.length)} / ${project.story.length}</span><span>Score ${playtest.score || 0}</span><span>${playtest.balance || 0} ${xgpSafe(project.economy?.currencySymbol)}</span><span>${xgpSafe(playtest.status)}</span></div>` : ""}<div class="xgp-runtime-actions">${activeArc?.choices?.map((choice, index) => `<button type="button" data-playtest-choice="${index}"><strong>${xgpSafe(choice.label)}</strong><small>${xgpSafe(choice.consequence)}</small></button>`).join("") || `<button type="button" class="xgp-runtime-start" data-playtest-start>${playtest?.status === "completed" ? "Play again" : "Start playtest"}</button>`}</div>${playtest?.choices?.length ? `<ol class="xgp-choice-history">${playtest.choices.slice(-4).map(choice => `<li><strong>${xgpSafe(choice.label)}</strong><span>${xgpSafe(choice.consequence)} · +${choice.reward}</span></li>`).join("")}</ol>` : ""}</section>`;
-    if (view === "agent") return `<section class="xgp-view"><div class="xgp-section-heading"><small>AI Builder</small><h1>Create the game, one production step at a time.</h1><p>Every generation is written to the active project and survives reloads.</p></div><div class="xgp-step-grid">${steps.map(([label,module,metric], index) => `<article><span>${String(index + 1).padStart(2,"0")}</span><strong>${xgpSafe(label)}</strong><small>${xgpSafe(metric)}</small><button type="button" data-agent-command="${module}" data-agent-prompt="Generate the next production-ready ${label} pass for ${project.title}." data-agent-return="agent">Generate</button></article>`).join("")}</div><div class="xgp-builder-grid"><article class="xgp-agent-panel"><div class="xgp-chat-log">${(project.aiThreads?.[0]?.messages || []).slice(-5).map(message => `<p><strong>${message.role === "assistant" ? "Comic30" : "Creator"}</strong><span>${xgpSafe(message.content)}</span></p>`).join("")}</div><form class="xgp-agent-compose" data-form="agent-chat"><input type="hidden" name="module" value="auto"><textarea name="message" required placeholder="Describe the next playable pass..."></textarea><button type="submit">Run AI pass</button></form></article><aside class="xgp-live-preview"><img src="/assets/theme-media/gameplay-creature-cinematic.jpg" alt=""><div><small>Active blueprint</small><h2>${xgpSafe(project.title)}</h2><p>${xgpSafe(project.premise)}</p></div></aside></div>${playtestPanel}</section>`;
-    if (view === "studio") {
-      const analytics = project.analytics || {};
-      return `<section class="xgp-view"><div class="xgp-section-heading"><small>Studio</small><h1>Deployed games and live performance.</h1></div><div class="xgp-analytics-grid">${xgpStat(analytics.players || 0,"Players")}${xgpStat(analytics.sessions || 0,"Sessions")}${xgpStat(`${analytics.retentionD1 || 0}%`,"D1 retention")}${xgpStat(analytics.rating || "—","Rating")}</div><div class="xgp-card-row"><article class="xgp-game-record"><img src="/assets/theme-media/gameplay-creature-cinematic.jpg" alt=""><div><small>${xgpSafe(project.lifecycle?.deploymentStatus || "draft")}</small><h2>${xgpSafe(project.title)}</h2><p>${xgpSafe(project.genre)} · ${project.deployments?.length || 0} releases</p><button type="button" data-project-action="deploy">${project.deployments?.length ? "Deploy new version" : "Deploy game"}</button></div></article>${(project.characters || []).slice(0,2).map(c => `<article class="xgp-game-record compact"><img src="/assets/theme-media/hero-character-card.jpg" alt=""><div><small>Playable cast</small><h2>${xgpSafe(c.name)}</h2><p>${xgpSafe(c.role)}</p></div></article>`).join("")}</div></section>`;
+    if (view === "agent") {
+      const availableModels = (state.modelCatalog || []).filter(model => model.available !== false);
+      const inferenceRuns = project.inferenceRuns || [];
+      const job = project.orchestrationJobs?.[0];
+      const manifest = project.runtimeManifest || { scene: {}, theme: {}, counts: { story: project.story?.length || 0, characters: project.characters?.length || 0, terrain: project.terrain?.length || 0 } };
+      const engineLabels = [["director","Director"],["narrative","Narrative"],["world","World / Level"],["character","Character / Asset"],["runtime","Runtime specification"]];
+      const engineStack = `<div class="xgp-engine-stack"><div><strong>Five-agent design stack</strong><small>${job ? `${job.progress}% · ${job.status}` : "Ready for a coordinated blueprint pass"}</small></div>${engineLabels.map(([id,label], index) => { const engine = job?.engines?.find(item => item.id === id); return `<article class="${engine?.status === "completed" ? "is-complete" : ""}"><span>${String(index + 1).padStart(2,"0")}</span><strong>${label}</strong><small>${engine?.status || "ready"}</small></article>`; }).join("")}</div>`;
+      const runtimeAssets = [manifest.assets?.player, ...(manifest.assets?.traffic || []), manifest.assets?.character, manifest.assets?.environment].filter(Boolean);
+      const assetQueue = renderAssetProductionQueue(runtimeAssets, project);
+      const productionEngine = renderProductionEnginePanel(project);
+      const productionPlan = renderTextToGamePlan(project);
+      const messages = project.aiThreads?.[0]?.messages || [];
+      const latestCreatorMessage = [...messages].reverse().find((message) => message.role !== "assistant");
+      const latestAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant");
+      return `<section class="xgp-view">
+        <div class="xgp-section-heading"><small>Game Builder</small><h1>Plan, produce, and verify a playable game.</h1><p>${hasProject ? "Describe the game you want. Comic30 compiles a typed game specification, coordinates gameplay, world, asset, rig, animation, audio, and engine jobs, then exposes separate prototype and production-readiness results." : "Create a project to begin."}</p></div>
+        ${renderBuilderCarousel(project, steps)}
+        ${productionPlan}
+        <div class="xgp-builder-grid xgp-generator-workspace">
+          <article class="xgp-agent-panel">
+            <div class="xgp-build-brief"><small>Current build request</small><strong>${xgpSafe(xgpExcerpt(latestCreatorMessage?.content || "Describe the game you want Comic30 to build.", 180))}</strong>${latestAssistantMessage ? `<span>${xgpSafe(xgpExcerpt(latestAssistantMessage.content, 220))}</span>` : ""}</div>
+            ${messages.length ? `<details class="xgp-transcript"><summary>View build transcript (${messages.length})</summary><div class="xgp-chat-log">${messages.slice(-8).map(message => `<p><strong>${message.role === "assistant" ? "Comic30" : "Creator"}</strong><span>${xgpSafe(message.content)}</span></p>`).join("")}</div></details>` : ""}
+            ${engineStack}
+            <form class="xgp-agent-compose" data-form="agent-chat">
+              <input type="hidden" name="module" value="auto">
+              <label class="xgp-model-picker"><span>Director model</span><select name="model">${availableModels.map(model => `<option value="${xgpSafe(model.id)}" data-provider="${xgpSafe(model.provider)}" ${model.id === state.selectedModel ? "selected" : ""}>${xgpSafe(model.label || model.name || model.id)} · ${xgpSafe(model.provider)}</option>`).join("")}</select></label>
+              <div class="xgp-chat-entry"><textarea name="message" required placeholder="Example: Build a cinematic endless racing game with a drivable hero vehicle, three traffic lanes, progression, touch controls, and a neon city track." ${hasProject ? "" : "disabled"}></textarea><button type="submit" ${hasProject ? "" : "disabled"}>Plan + build game</button></div>
+            </form>
+            ${inferenceRuns.length ? `<div class="xgp-choice-history"><strong>Recent inference</strong>${inferenceRuns.slice(0,3).map(run => `<span>${xgpSafe(run.provider)} · ${xgpSafe(run.model)} · ${xgpSafe(run.status)}${run.fallbackUsed ? " · deterministic fallback" : ""}</span>`).join("")}</div>` : ""}
+          </article>
+          ${productionEngine}
+        </div>
+        ${assetQueue}
+        ${playtestPanel}
+      </section>`;
     }
-    if (view === "pipeline") return `<section class="xgp-view"><div class="xgp-section-heading"><small>Pipeline</small><h1>Project library, QA, packaging, and release.</h1></div><div class="xgp-project-library">${state.projects.map(item => `<article class="xgp-project-row ${item.id === project.id ? "active" : ""}"><button type="button" class="xgp-project-open" data-project-id="${item.id}"><strong>${xgpSafe(item.title)}</strong><small>${xgpSafe(item.status)} · QA ${xgpSafe(item.lifecycle?.qaStatus || "not-run")}</small></button><div><button type="button" data-project-id="${item.id}">Edit</button>${item.id === project.id ? `<button type="button" data-build-project="${item.id}">Package</button><button type="button" data-project-action="qa">Run QA</button><button type="button" data-project-action="redeploy">Redeploy</button><button type="button" data-project-action="replicate">Replicate</button><button type="button" data-project-action="${item.lifecycle?.archived ? "restore" : "archive"}">${item.lifecycle?.archived ? "Restore" : "Archive"}</button>` : ""}</div></article>`).join("")}</div><div class="xgp-pipeline-footer"><strong>${project.buildJobs?.length || 0} build jobs · ${project.builds?.length || 0} downloadable packages</strong><button type="button" data-export-project="${project.id}">Export complete game kit</button></div></section>`;
+    if (view === "studio") {
+      const analytics = state.studioAnalytics[project.id] || project.analytics || {};
+      return `<section class="xgp-view"><div class="xgp-section-heading"><small>Studio</small><h1>Deployed games and live performance.</h1><button type="button" data-refresh-analytics>Refresh analytics</button></div><div class="xgp-analytics-grid">${xgpStat(analytics.players || 0,"Players")}${xgpStat(analytics.sessions || 0,"Sessions")}${xgpStat(`${analytics.completionRate ?? analytics.retentionD1 ?? 0}%`,"Playtest completion")}${xgpStat(analytics.averageScore ?? analytics.rating ?? "—","Average score")}${xgpStat(analytics.deployments || project.deployments?.length || 0,"Deployments")}${xgpStat(analytics.qaScore ?? "—","QA score")}</div><div class="xgp-card-row"><article class="xgp-game-record"><img src="/assets/theme-media/gameplay-creature-cinematic.jpg" alt=""><div><small>${xgpSafe(project.lifecycle?.deploymentStatus || "draft")}</small><h2>${xgpSafe(project.title)}</h2><p>${xgpSafe(project.genre)} · ${project.deployments?.length || 0} releases</p><button type="button" data-project-action="deploy">${project.deployments?.length ? "Deploy new version" : "Deploy game"}</button></div></article>${(project.characters || []).slice(0,2).map(c => `<article class="xgp-game-record compact"><img src="/assets/theme-media/hero-character-card.jpg" alt=""><div><small>Playable cast</small><h2>${xgpSafe(c.name)}</h2><p>${xgpSafe(c.role)}</p></div></article>`).join("")}</div></section>`;
+    }
+    if (view === "pipeline") {
+      const qa = project.qaRuns?.[0];
+      const operations = [["navigation-bake","Bake navigation"],["shader-validate","Validate shaders"],["lod-generate","Generate LOD"],["asset-optimize","Optimize assets"]];
+      return `<section class="xgp-view"><div class="xgp-section-heading"><small>Pipeline</small><h1>Project library, QA, packaging, and release.</h1></div><div class="xgp-project-library">${state.projects.map(item => `<article class="xgp-project-row ${item.id === project.id ? "active" : ""}"><button type="button" class="xgp-project-open" data-project-id="${item.id}"><strong>${xgpSafe(item.title)}</strong><small>${xgpSafe(item.status)} · QA ${xgpSafe(item.lifecycle?.qaStatus || "not-run")}</small></button><div><button type="button" data-project-id="${item.id}">Edit</button>${item.id === project.id ? `<button type="button" data-build-project="${item.id}">Package</button><button type="button" data-project-action="qa">Run QA</button><button type="button" data-project-action="redeploy">Redeploy</button><button type="button" data-project-action="replicate">Replicate</button><button type="button" data-project-action="${item.lifecycle?.archived ? "restore" : "archive"}">${item.lifecycle?.archived ? "Restore" : "Archive"}</button>` : ""}</div></article>`).join("")}</div><div class="xgp-section-heading"><small>Engine operations</small><h2>Build and validate persisted runtime assets.</h2></div><div class="xgp-wallet-tabs">${operations.map(([type,label]) => `<article><strong>${label}</strong><span>${xgpSafe(project.operationJobs?.find(job => job.type === type)?.status || "Ready")}</span><button type="button" data-operation-type="${type}">Run operation</button></article>`).join("")}</div>${qa ? `<div class="xgp-panel-soft"><h2>Latest QA · ${qa.score}% · ${xgpSafe(qa.status)}</h2><div class="xgp-project-library">${qa.checks.map(check => `<article class="xgp-project-row"><span><strong>${xgpSafe(check.id)}</strong><small>${xgpSafe(check.detail || "")}</small></span><strong>${check.passed ? "Pass" : "Needs work"}</strong></article>`).join("")}</div></div>` : ""}<div class="xgp-pipeline-footer"><strong>${project.buildJobs?.length || 0} build jobs · ${project.builds?.length || 0} downloadable packages · ${project.operationJobs?.length || 0} operations</strong><button type="button" data-export-project="${project.id}">Export complete game kit</button></div></section>`;
+    }
     if (view === "wallet") return `<section class="xgp-view"><div class="xgp-section-heading"><small>Wallet · final production phase</small><h1>Monetization, rewards, and compliance controls.</h1><p>Wallet configuration remains optional and separated from core game creation.</p></div><div class="xgp-wallet-tabs"><article><strong>Wallet type</strong><span>${xgpSafe(project.economy?.walletMode || "internal-ledger")}</span><small>Custodial, non-custodial, or internal ledger</small></article><article><strong>Tokenization</strong><span>${xgpSafe(project.economy?.chainReadiness || "Disabled")}</span><small>Requires legal and regional review</small></article><article><strong>Ad monetization</strong><span>Rewarded ads staged</span><small>Consent and age gates required</small></article><article><strong>Compliance</strong><span>${project.design?.compliance?.length || 0} controls</span><small>COPPA, store policy, fraud, and disclosures</small></article></div><div class="xgp-builder-grid"><form class="xgp-panel-soft xgp-wallet-form" data-form="economy-update"><h2>Economy settings</h2><label>Currency name<input name="currencyName" value="${xgpSafe(project.economy?.currencyName)}" required></label><label>Symbol<input name="currencySymbol" value="${xgpSafe(project.economy?.currencySymbol)}" required></label><label>Starting balance<input name="startingBalance" type="number" value="${project.economy?.startingBalance || 0}"></label><label>Maximum supply<input name="maxSupply" type="number" value="${project.economy?.maxSupply || 0}"></label><button type="submit">Save economy</button></form><form class="xgp-panel-soft xgp-wallet-form" data-form="iap-add"><h2>Add IAP product</h2><label>Name<input name="name" required></label><label>Platform SKU<input name="platformSku" required></label><label>USD price<input name="priceUsd" type="number" step=".01" required></label><label>Reward grant<input name="grants" type="number" required></label><button type="submit">Add product</button></form></div><div class="xgp-project-library">${(project.economy?.iapProducts || []).map(item => `<article class="xgp-project-row"><span><strong>${xgpSafe(item.name)}</strong><small>${xgpSafe(item.platformSku)}</small></span><strong>$${Number(item.priceUsd || 0).toFixed(2)} · ${item.grants || 0} ${xgpSafe(project.economy?.currencySymbol)}</strong></article>`).join("")}${(project.economy?.rewards || []).map(item => `<article class="xgp-project-row"><span><strong>${xgpSafe(item.name)}</strong><small>Reward trigger · ${xgpSafe(item.trigger)}</small></span><strong>+${item.amount} ${xgpSafe(project.economy?.currencySymbol)}</strong></article>`).join("")}</div></section>`;
     return `<section class="xgp-view xgp-home-view"><div class="xgp-section-heading"><small>Creator portal</small><h1>${xgpSafe(project.title)}</h1><p>${xgpSafe(project.premise)}</p></div><div class="xgp-hero-row">${xgpHeroCard("Continue Builder","Eight-step creation flow","/assets/theme-media/gameplay-creature-cinematic.jpg","agent")}${xgpHeroCard("Open Studio","Deployments and analytics","/assets/theme-media/hero-character-card.jpg","studio")}${xgpHeroCard("Manage Pipeline","QA, package, replicate","/assets/theme-media/esports-command-center.jpg","pipeline")}</div></section>`;
   }
 
-  function renderPortal() {
+  function renderCheckpointPortal() {
     const project = currentProject();
     return `
       <section class="portal-shell c30-console-shell">
-        <video class="portal-backdrop-video" autoplay muted loop playsinline preload="auto">
+        <video class="portal-backdrop-video" muted loop playsinline preload="none">
           <source src="/api/media?media=videos/user/space-game-portal.mp4" type="video/mp4">
         </video>
         <div class="portal-backdrop-shade" aria-hidden="true"></div>
@@ -709,7 +1051,7 @@
     return `
       <aside class="c30-rail">
         <button class="c30-rail-brand" type="button" data-screen="home" aria-label="Back to website">
-          <img src="/assets/images/comic30-logo.png" alt="Comic30">
+          <img src="/assets/brand/comic30-icon.png" alt="Comic30">
         </button>
         <nav class="c30-rail-nav" aria-label="Creator console">
           ${tabs.map(([view, label, icon]) => `
@@ -770,7 +1112,7 @@
             </div>
           </div>
           <div class="c30-hero-media">
-            <video autoplay muted loop playsinline preload="metadata">
+            <video muted loop playsinline preload="none">
               <source src="/api/media?media=videos/user/space-game-portal.mp4" type="video/mp4">
             </video>
             <div>
@@ -1832,7 +2174,7 @@
   };
 
   function gameVideo(src, className = "") {
-    return `<video class="${className}" src="${src}" autoplay muted loop playsinline preload="metadata"></video>`;
+    return `<video class="${className}" src="${src}" muted loop playsinline preload="none"></video>`;
   }
 
   function gameInitials(value) {
@@ -2182,6 +2524,65 @@
   }
 
   document.addEventListener("click", async (event) => {
+    const assetPreviewButton = event.target.closest("[data-asset-preview-src]");
+    if (assetPreviewButton) {
+      const src = assetPreviewButton.dataset.assetPreviewSrc || "";
+      const kind = assetPreviewButton.dataset.assetPreviewKind || "file";
+      const name = assetPreviewButton.dataset.assetPreviewName || "asset";
+      let preview = null;
+
+      if (kind === "model") {
+        preview = document.createElement("model-viewer");
+        preview.setAttribute("src", src);
+        preview.setAttribute("alt", `3D preview of ${name}`);
+        preview.setAttribute("camera-controls", "");
+        preview.setAttribute("auto-rotate", "");
+        preview.setAttribute("interaction-prompt", "none");
+        preview.setAttribute("shadow-intensity", "1");
+        preview.setAttribute("exposure", "1.15");
+        const animation = assetPreviewButton.dataset.assetPreviewAnimation;
+        if (animation) {
+          preview.setAttribute("autoplay", "");
+          preview.setAttribute("animation-name", animation);
+        }
+      } else if (kind === "image") {
+        preview = document.createElement("img");
+        preview.className = "xgp-upload-preview";
+        preview.alt = `Preview of ${name}`;
+        preview.src = src;
+      } else if (kind === "video") {
+        preview = document.createElement("video");
+        preview.className = "xgp-upload-preview";
+        preview.controls = true;
+        preview.preload = "metadata";
+        preview.src = src;
+      } else if (kind === "audio") {
+        preview = document.createElement("audio");
+        preview.className = "xgp-upload-preview";
+        preview.controls = true;
+        preview.preload = "metadata";
+        preview.src = src;
+      }
+
+      if (preview) {
+        preview.tabIndex = 0;
+        assetPreviewButton.replaceWith(preview);
+        if (kind === "model") setupManagedModels();
+        preview.focus();
+      }
+      return;
+    }
+
+    const assetInspectButton = event.target.closest("[data-asset-inspect]");
+    if (assetInspectButton) {
+      const details = assetInspectButton.closest("article")?.querySelector("details");
+      if (details) {
+        details.open = !details.open;
+        details.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+      return;
+    }
+
     const engineModeButton = event.target.closest("[data-engine-mode]");
     if (engineModeButton) {
       setEngineMode(engineModeButton.dataset.engineMode || "world", { animate: true, announce: true });
@@ -2302,6 +2703,50 @@
       return;
     }
 
+    const engineBuildButton = event.target.closest("[data-engine-build-action]");
+    if (engineBuildButton) {
+      const project = currentProject();
+      if (!project) return;
+      const action = engineBuildButton.dataset.engineBuildAction;
+      const originalLabel = engineBuildButton.textContent;
+      engineBuildButton.disabled = true;
+      const progressLabels = {
+        generate: "Generating Unreal project…",
+        validate: "Importing and validating…",
+        package: "Cooking and packaging…",
+          launch: "Launching Windows build…",
+        "open-editor": "Opening Unreal Editor…"
+      };
+      engineBuildButton.textContent = progressLabels[action] || "Working…";
+      try {
+        const response = await api(`/api/projects/${project.id}/engine-build`, {
+          method: "POST",
+          body: {
+            action,
+            jobId: engineBuildButton.dataset.engineJob,
+            target: "Win64",
+            prompt: project.orchestrationJobs?.[0]?.prompt || project.premise
+          }
+        });
+        replaceProject(response.project);
+        state.view = "agent";
+        render();
+        const messages = {
+          generate: "A real Unreal Engine 5.6 project was generated and is ready for engine validation.",
+          validate: response.job?.validation?.ok ? "Unreal opened and validated the generated project." : "Unreal validation failed. Review the engine build status.",
+          package: response.job?.package?.ok ? "Unreal cooked and packaged the Win64 build." : "Unreal packaging failed. Review the engine build status.",
+          launch: "The packaged Windows build is opening in a separate 1280×720 desktop window.",
+          "open-editor": "The editable Comic30 project is opening in Unreal Editor."
+        };
+        showToast(messages[action] || "Engine build updated.");
+      } catch (error) {
+        showToast(error.message);
+        engineBuildButton.disabled = false;
+        engineBuildButton.textContent = originalLabel;
+      }
+      return;
+    }
+
     const buildButton = event.target.closest("[data-build-project]");
     if (buildButton) {
       buildButton.disabled = true;
@@ -2345,23 +2790,106 @@
       return;
     }
 
+    const analyticsButton = event.target.closest("[data-refresh-analytics]");
+    if (analyticsButton) {
+      const project = currentProject();
+      if (!project) return;
+      analyticsButton.disabled = true;
+      try {
+        const response = await api(`/api/projects/${project.id}/analytics`);
+        state.studioAnalytics[project.id] = response.analytics || {};
+        render();
+        showToast("Studio analytics refreshed.");
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
+
+    const operationButton = event.target.closest("[data-operation-type]");
+    if (operationButton) {
+      const project = currentProject();
+      if (!project) return;
+      operationButton.disabled = true;
+      try {
+        const response = await api(`/api/projects/${project.id}/operations`, {
+          method: "POST",
+          body: { type: operationButton.dataset.operationType }
+        });
+        replaceProject(response.project);
+        render();
+        showToast(`${operationButton.dataset.operationType} completed and saved.`);
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
+
+    const builderRecommendation = event.target.closest("[data-builder-recommend]");
+    if (builderRecommendation) {
+      const form = builderRecommendation.closest("form");
+      const textarea = form?.querySelector('textarea[name="prompt"]');
+      if (textarea) {
+        textarea.value = builderRecommendation.dataset.builderRecommend;
+        textarea.focus();
+      }
+      return;
+    }
+
+    const builderCloseButton = event.target.closest("[data-builder-close]");
+    if (builderCloseButton) {
+      state.builderPanel = null;
+      render();
+      return;
+    }
+
+    const builderOpenButton = event.target.closest("[data-builder-open]");
+    if (builderOpenButton) {
+      if (!currentProject()) {
+        showToast("Create or select a project before opening a production stage.");
+        return;
+      }
+      state.builderPanel = builderOpenButton.dataset.builderOpen;
+      state.builderStep = Number(builderOpenButton.dataset.builderIndex || 0);
+      render();
+      return;
+    }
+
+    const builderNavButton = event.target.closest("[data-builder-nav]");
+    if (builderNavButton) {
+      state.builderStep = Math.max(0, Math.min(7, Number(builderNavButton.dataset.builderNav || 0)));
+      render();
+      requestAnimationFrame(() => {
+        document.querySelector(".xgp-step-carousel .is-active")?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+      });
+      return;
+    }
+
     const agentCommandButton = event.target.closest("[data-agent-command]");
     if (agentCommandButton) {
       const project = currentProject();
-      if (!project) return;
+      if (!project) {
+        state.view = "overview";
+        render();
+        showToast("Create a project before running the Builder.");
+        return;
+      }
       agentCommandButton.disabled = true;
       try {
-        const response = await api(`/api/projects/${project.id}/agent`, {
+        const response = await api(`/api/projects/${project.id}/engine`, {
           method: "POST",
           body: {
-            message: agentCommandButton.dataset.agentPrompt,
+            prompt: agentCommandButton.dataset.agentPrompt,
             module: agentCommandButton.dataset.agentCommand
           }
         });
         replaceProject(response.project);
+        if (agentCommandButton.dataset.builderIndex) {
+          state.builderStep = Math.min(7, Number(agentCommandButton.dataset.builderIndex) + 1);
+        }
         state.view = agentCommandButton.dataset.agentReturn || "tools";
         render();
-        showToast("Tool pass saved.");
+        showToast("Generation completed and saved to the project.");
       } catch (error) {
         showToast(error.message);
       } finally {
@@ -2397,6 +2925,92 @@
       const data = formData(form);
       const kind = form.dataset.form;
       const project = currentProject();
+
+      if (kind === "asset-upload") {
+        if (!project) throw new Error("Select a project before uploading assets.");
+        const input = form.querySelector('input[name="files"]');
+        const files = Array.from(input?.files || []);
+        if (!files.length) throw new Error("Choose one or more asset files to upload.");
+        const submitButton = form.querySelector('button[type="submit"]');
+        let uploaded = 0;
+        for (const file of files) {
+          if (submitButton) submitButton.textContent = `Uploading ${uploaded + 1} / ${files.length}`;
+          const session = await api(`/api/projects/${encodeURIComponent(project.id)}/assets/upload-session`, {
+            method: "POST",
+            body: { filename: file.name, size: file.size, contentType: file.type, kind: data.kind, rigProfile: data.rigProfile }
+          });
+          let response;
+          if (session.directUpload) {
+            response = await api(`/api/projects/${encodeURIComponent(project.id)}/assets/upload`, {
+              method: "POST",
+              headers: {
+                "content-type": file.type || "application/octet-stream",
+                "x-comic30-filename": encodeURIComponent(file.name),
+                "x-comic30-asset-kind": data.kind || "other",
+                "x-comic30-rig-profile": data.rigProfile || "none"
+              },
+              body: file
+            });
+          } else {
+            const stored = await fetch(session.uploadUrl, {
+              method: session.method || "PUT",
+              headers: { "content-type": session.contentType || file.type || "application/octet-stream" },
+              body: file
+            });
+            if (!stored.ok) {
+              const detail = await stored.text().catch(() => "");
+              throw new Error(`Object storage rejected ${file.name} (${stored.status}). ${detail}`.trim());
+            }
+            if (submitButton) submitButton.textContent = `Validating ${uploaded + 1} / ${files.length}`;
+            response = await api(`/api/projects/${encodeURIComponent(project.id)}/assets/finalize`, {
+              method: "POST",
+              body: {
+                assetId: session.assetId,
+                filename: session.filename,
+                objectPath: session.objectPath,
+                contentType: session.contentType,
+                kind: data.kind,
+                rigProfile: data.rigProfile
+              }
+            });
+          }
+          replaceProject(response.project);
+          uploaded += 1;
+        }
+        render();
+        showToast(`${uploaded} asset${uploaded === 1 ? "" : "s"} uploaded, validated, and saved to the project library.`);
+        return;
+      }
+
+      if (kind === "engine-create") {
+        if (!project) throw new Error("Select a project before creating engine content.");
+        const selections = Object.entries(data)
+          .filter(([key, value]) => !["module", "prompt"].includes(key) && value)
+          .map(([key, value]) => `${key}: ${value}`);
+        const prompt = [data.prompt, selections.length ? `Selected options — ${selections.join(", ")}` : ""].filter(Boolean).join(". ");
+        const response = await api(`/api/projects/${project.id}/engine`, {
+          method: "POST",
+          body: { module: data.module, prompt, options: Object.fromEntries(Object.entries(data).filter(([key]) => !["module", "prompt"].includes(key))) }
+        });
+        replaceProject(response.project);
+        state.builderPanel = data.module;
+        render();
+        showToast(`${data.module} content created and saved.`);
+        return;
+      }
+
+      if (kind === "engine-update") {
+        if (!project) throw new Error("Select a project before editing engine content.");
+        const response = await api(`/api/projects/${project.id}/engine/item`, {
+          method: "PUT",
+          body: { module: data.module, index: Number(data.index), value: data.value }
+        });
+        replaceProject(response.project);
+        state.builderPanel = data.module;
+        render();
+        showToast("Engine item updated and saved.");
+        return;
+      }
 
       if (kind === "start-project") {
         state.draft = data;
@@ -2435,17 +3049,149 @@
       if (!project) return;
 
       if (kind === "agent-chat") {
-        const response = await api(`/api/projects/${project.id}/agent`, {
+        const selected = form.querySelector('select[name="model"] option:checked');
+        const submitButton = form.querySelector('button[type="submit"]');
+        const provider = selected?.dataset.provider || "internal";
+        state.selectedProvider = provider;
+        state.selectedModel = data.model || "comic30/director-v1";
+        if (submitButton) submitButton.textContent = "1 / 7 · Compiling specification…";
+        const planned = await api(`/api/projects/${project.id}/text-to-game`, {
+          method: "POST",
+          body: {
+            action: "plan",
+            prompt: data.message,
+            qualityTier: "production",
+            targets: ["Win64", "Android", "iOS"]
+          }
+        });
+        replaceProject(planned.project);
+        const productionRunId = planned.run?.id;
+        const sourceWorker = planned.run?.workers?.sourceAssets;
+        if (!sourceWorker?.available) {
+          state.view = "agent";
+          render();
+          throw new Error(sourceWorker?.reason || "The high-fidelity source-asset worker is not ready. Configure and start it before building a production game.");
+        }
+        if (submitButton) submitButton.textContent = "2 / 7 · Generating source assets…";
+        const submittedAssets = await api(`/api/projects/${project.id}/text-to-game`, {
+          method: "POST",
+          body: { action: "assets", runId: productionRunId }
+        });
+        replaceProject(submittedAssets.project);
+        let assetRun = submittedAssets.run;
+        const assetDeadline = Date.now() + 45 * 60 * 1000;
+        while (["queued", "running"].includes(assetRun?.sourceAssetJob?.status) && Date.now() < assetDeadline) {
+          if (submitButton) {
+            const progress = Number(assetRun.sourceAssetJob.progress || 0);
+            const current = assetRun.sourceAssetJob.currentAsset?.name;
+            submitButton.textContent = `2 / 7 · Assets ${progress}%${current ? ` · ${current}` : ""}`;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 6500));
+          const syncedAssets = await api(`/api/projects/${project.id}/text-to-game`, {
+            method: "POST",
+            body: { action: "sync", runId: productionRunId }
+          });
+          replaceProject(syncedAssets.project);
+          assetRun = syncedAssets.run;
+        }
+        if (assetRun?.sourceAssetJob?.status !== "completed") {
+          state.view = "agent";
+          render();
+          throw new Error(assetRun?.sourceAssetJob?.error || "Source-asset generation did not complete before the 45 minute portal deadline. The persisted job can still be resumed from Pipeline.");
+        }
+        const rigRequirements = (assetRun?.spec?.content?.assetRequirements || []).filter((item) => item.rigRequired === true);
+        if (rigRequirements.length) {
+          const rigWorker = assetRun?.workers?.rigging || planned.run?.workers?.rigging;
+          if (!rigWorker?.available) {
+            state.view = "agent";
+            render();
+            throw new Error(rigWorker?.reason || "The rig worker is not ready. Configure and start it before building assets that require skeletons and skinning.");
+          }
+          if (submitButton) submitButton.textContent = "3 / 7 · Generating + validating rigs…";
+          const submittedRig = await api(`/api/projects/${project.id}/text-to-game`, {
+            method: "POST",
+            body: { action: "rig", runId: productionRunId }
+          });
+          replaceProject(submittedRig.project);
+          assetRun = submittedRig.run;
+          const rigDeadline = Date.now() + 45 * 60 * 1000;
+          while (["queued", "running"].includes(assetRun?.rigJob?.status) && Date.now() < rigDeadline) {
+            if (submitButton) {
+              const progress = Number(assetRun.rigJob.progress || 0);
+              const current = assetRun.rigJob.currentAsset?.name;
+              submitButton.textContent = `3 / 7 · Rigs ${progress}%${current ? ` · ${current}` : ""}`;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 6500));
+            const syncedRig = await api(`/api/projects/${project.id}/text-to-game`, {
+              method: "POST",
+              body: { action: "sync", runId: productionRunId }
+            });
+            replaceProject(syncedRig.project);
+            assetRun = syncedRig.run;
+          }
+          if (assetRun?.rigJob?.status !== "completed") {
+            state.view = "agent";
+            render();
+            throw new Error(assetRun?.rigJob?.error || "Rig generation did not complete before the 45 minute portal deadline. The persisted job can still be resumed from Pipeline.");
+          }
+        } else if (submitButton) {
+          submitButton.textContent = "3 / 7 · Rigging not required";
+        }
+        if (submitButton) submitButton.textContent = "4 / 7 · Designing systems…";
+        const response = await api(`/api/projects/${project.id}/orchestrate`, {
           method: "POST",
           body: {
             message: data.message,
-            module: data.module
+            module: data.module,
+            provider,
+            model: data.model
           }
         });
         replaceProject(response.project);
+        if (submitButton) submitButton.textContent = "5 / 7 · Generating Unreal…";
+        const generated = await api(`/api/projects/${project.id}/engine-build`, {
+          method: "POST",
+          body: { action: "generate", engine: "unreal", target: "Win64", prompt: data.message, productionRunId }
+        });
+        replaceProject(generated.project);
+        if (!generated.job?.id || generated.job.status !== "engine-project-generated") {
+          if (productionRunId) {
+            const synced = await api(`/api/projects/${project.id}/text-to-game`, { method: "POST", body: { action: "sync", runId: productionRunId } });
+            replaceProject(synced.project);
+          }
+          render();
+          throw new Error(generated.job?.error || "Comic30 could not generate the Unreal project.");
+        }
+        if (submitButton) submitButton.textContent = "6 / 7 · Importing + validating…";
+        const validated = await api(`/api/projects/${project.id}/engine-build`, {
+          method: "POST",
+          body: { action: "validate", jobId: generated.job.id, target: "Win64" }
+        });
+        replaceProject(validated.project);
+        if (!validated.job?.validation?.ok) {
+          if (productionRunId) {
+            const synced = await api(`/api/projects/${project.id}/text-to-game`, { method: "POST", body: { action: "sync", runId: productionRunId } });
+            replaceProject(synced.project);
+          }
+          render();
+          throw new Error(validated.job?.validation?.error || "Unreal asset import or Blueprint validation failed.");
+        }
+        if (submitButton) submitButton.textContent = "7 / 7 · Cooking + packaging…";
+        const packaged = await api(`/api/projects/${project.id}/engine-build`, {
+          method: "POST",
+          body: { action: "package", jobId: generated.job.id, target: "Win64" }
+        });
+        replaceProject(packaged.project);
+        if (productionRunId) {
+          const synced = await api(`/api/projects/${project.id}/text-to-game`, { method: "POST", body: { action: "sync", runId: productionRunId } });
+          replaceProject(synced.project);
+        }
         state.view = "agent";
         render();
-        showToast("Agent pass saved.");
+        if (!packaged.job?.package?.ok) {
+          throw new Error(packaged.job?.package?.error || "Unreal packaging failed. The validated project remains available.");
+        }
+        showToast("The playable prototype is verified. Production readiness separately reports every high-fidelity asset, rig, animation, audio, engine, and target-build requirement.");
         return;
       }
 
@@ -2570,13 +3316,102 @@
     });
   });
 
+  function initEndlessRacer(canvas) {
+    const context = canvas.getContext("2d");
+    const game = { running: false, over: false, lane: 1, score: 0, best: Number(localStorage.getItem("comic30-racer-best") || 0), speed: 280, traffic: [], spawn: 0, last: performance.now() };
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+      canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    };
+    const restart = () => Object.assign(game, { running: true, over: false, lane: 1, score: 0, speed: 280, traffic: [], spawn: 0, last: performance.now() });
+    const move = (direction) => {
+      if (!game.running || game.over) restart();
+      game.lane = Math.max(0, Math.min(2, game.lane + direction));
+    };
+    const onKey = (event) => {
+      if (!["ArrowLeft", "ArrowRight", "a", "A", "d", "D", " "].includes(event.key)) return;
+      event.preventDefault();
+      if (event.key === "ArrowLeft" || event.key.toLowerCase() === "a") move(-1);
+      else if (event.key === "ArrowRight" || event.key.toLowerCase() === "d") move(1);
+      else restart();
+    };
+    canvas.addEventListener("keydown", onKey);
+    canvas.addEventListener("pointerdown", (event) => {
+      canvas.focus();
+      if (!game.running || game.over) return restart();
+      const rect = canvas.getBoundingClientRect();
+      move(event.clientX < rect.left + rect.width / 2 ? -1 : 1);
+    });
+    const drawCar = (x, y, width, height, color) => {
+      context.fillStyle = color;
+      context.fillRect(x - width / 2, y - height / 2, width, height);
+      context.fillStyle = "rgba(255,255,255,.72)";
+      context.fillRect(x - width * .28, y - height * .28, width * .56, height * .22);
+      context.fillStyle = "#071018";
+      context.fillRect(x - width * .42, y + height * .22, width * .22, height * .13);
+      context.fillRect(x + width * .2, y + height * .22, width * .22, height * .13);
+    };
+    const frame = (time) => {
+      if (!canvas.isConnected) return;
+      const width = canvas.clientWidth, height = canvas.clientHeight;
+      const dt = Math.min(.034, (time - game.last) / 1000 || 0); game.last = time;
+      if (game.running && !game.over) {
+        game.score += dt * game.speed / 8;
+        game.speed = Math.min(720, game.speed + dt * 7);
+        game.spawn -= dt;
+        if (game.spawn <= 0) {
+          game.traffic.push({ lane: Math.floor(Math.random() * 3), y: -60, speed: game.speed * (.76 + Math.random() * .22), color: ["#ff5b57", "#ff9f2e", "#37c4ff"][Math.floor(Math.random() * 3)] });
+          game.spawn = Math.max(.32, .86 - game.speed / 1500);
+        }
+        game.traffic.forEach(car => { car.y += car.speed * dt; });
+        game.traffic = game.traffic.filter(car => car.y < height + 90);
+        const playerY = height - 74;
+        if (game.traffic.some(car => car.lane === game.lane && Math.abs(car.y - playerY) < 54)) {
+          game.over = true; game.running = false; game.best = Math.max(game.best, Math.floor(game.score));
+          localStorage.setItem("comic30-racer-best", String(game.best));
+        }
+      }
+      const sky = context.createLinearGradient(0, 0, 0, height);
+      sky.addColorStop(0, "#071525"); sky.addColorStop(1, "#180d28"); context.fillStyle = sky; context.fillRect(0, 0, width, height);
+      const roadLeft = width * .16, roadWidth = width * .68, laneWidth = roadWidth / 3;
+      context.fillStyle = "#101722"; context.fillRect(roadLeft, 0, roadWidth, height);
+      context.strokeStyle = "rgba(255,255,255,.55)"; context.lineWidth = 3; context.setLineDash([28, 24]);
+      for (let lane = 1; lane < 3; lane += 1) { context.beginPath(); context.moveTo(roadLeft + laneWidth * lane, 0); context.lineTo(roadLeft + laneWidth * lane, height); context.stroke(); }
+      context.setLineDash([]); context.strokeStyle = "#25f5b3"; context.strokeRect(roadLeft, 0, roadWidth, height);
+      const laneX = lane => roadLeft + laneWidth * lane + laneWidth / 2;
+      game.traffic.forEach(car => drawCar(laneX(car.lane), car.y, Math.min(40, laneWidth * .38), 66, car.color));
+      drawCar(laneX(game.lane), height - 74, Math.min(44, laneWidth * .42), 72, "#25f5b3");
+      context.fillStyle = "white"; context.font = "800 16px Arial"; context.fillText(`DISTANCE ${Math.floor(game.score)} m`, 18, 28); context.fillText(`BEST ${game.best} m`, 18, 50);
+      context.textAlign = "right"; context.fillText(`${Math.floor(game.speed)} km/h`, width - 18, 28); context.textAlign = "left";
+      if (!game.running) {
+        context.fillStyle = "rgba(3,7,12,.76)"; context.fillRect(0, 0, width, height);
+        context.textAlign = "center"; context.fillStyle = "white"; context.font = "900 28px Arial";
+        context.fillText(game.over ? "CRASHED" : "ENDLESS VELOCITY", width / 2, height / 2 - 18);
+        context.font = "700 15px Arial"; context.fillStyle = "#25f5b3";
+        context.fillText(game.over ? `Distance ${Math.floor(game.score)} m · click or Space to retry` : "Click to drive · A/D or arrow keys", width / 2, height / 2 + 18); context.textAlign = "left";
+      }
+      requestAnimationFrame(frame);
+    };
+    resize(); window.addEventListener("resize", resize); requestAnimationFrame(frame);
+  }
+
   function initGameplayPreviews() {
     const canvases = Array.from(document.querySelectorAll("[data-gameplay-preview]"));
+    import("/js/runtime3d.js?v=20260819-webgl-runtime").then((runtime3d) => runtime3d.initModelPreviews()).catch(() => {});
     if (!canvases.length || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
     canvases.forEach((canvas) => {
       if (canvas.dataset.ready === "true") return;
       canvas.dataset.ready = "true";
+      if (canvas.dataset.runtimeType === "endless-racer") {
+        import("/js/runtime3d.js?v=20260819-webgl-runtime")
+          .then((runtime3d) => runtime3d.initEndlessRacer3D(canvas))
+          .catch(() => initEndlessRacer(canvas));
+        return;
+      }
       const context = canvas.getContext("2d");
       let frame = 0;
 
@@ -2652,6 +3487,16 @@
       window.addEventListener("resize", resize);
     });
   }
+
+  document.addEventListener("click", (event) => {
+    const focusButton = event.target.closest("[data-runtime-focus]");
+    if (!focusButton) return;
+    const canvas = document.querySelector(".xgp-runtime-stage canvas[data-gameplay-preview]");
+    if (!canvas) return;
+    canvas.focus();
+    canvas.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: canvas.getBoundingClientRect().left + canvas.clientWidth * .75 }));
+    canvas.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
 
   loadSession();
   initNeuralCanvas();
@@ -2777,16 +3622,15 @@
     }
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const visibleVideos = new Map();
-    const heroVideo = document.querySelector(".parallax-hero .scene-video");
     const playVideo = (video) => {
       if (reduceMotion) {
         return;
       }
       video.muted = true;
       video.playsInline = true;
-      video.preload = "auto";
-      if (video.readyState < 2) {
+      video.preload = "metadata";
+      if (video.readyState === 0 && video.dataset.mediaRequested !== "true") {
+        video.dataset.mediaRequested = "true";
         video.load();
       }
       video.play?.().catch(() => {});
@@ -2797,110 +3641,29 @@
 
     videos.forEach((video, index) => {
       video.dataset.videoIndex = String(index);
-      video.dataset.videoPriority = video === heroVideo
-        ? "5"
-        : video.closest(".motion-overlay")
-          ? "4"
-          : video.classList.contains("scene-video")
-            ? "2"
-            : "1";
-      video.preload = video === heroVideo ? "auto" : "metadata";
+      video.autoplay = false;
+      video.removeAttribute("autoplay");
+      video.preload = "none";
       video.muted = true;
       video.playsInline = true;
-      if (video !== heroVideo) {
-        pauseVideo(video);
-      }
+      pauseVideo(video);
     });
 
-    if (heroVideo) {
-      heroVideo.autoplay = true;
-      heroVideo.setAttribute("autoplay", "");
-      visibleVideos.set(heroVideo, 1);
-      playVideo(heroVideo);
-      window.setTimeout(() => playVideo(heroVideo), 250);
-      window.setTimeout(() => playVideo(heroVideo), 900);
-    }
+    const optedInVideos = videos.filter((video) => video.dataset.autoplayMedia === "true");
+    if (!optedInVideos.length || reduceMotion) return;
 
     if (!("IntersectionObserver" in window)) {
-      videos.slice(0, 2).forEach(playVideo);
       return;
     }
 
-    const updateActiveVideos = () => {
-      const entries = Array.from(visibleVideos.entries()).filter(([, ratio]) => ratio >= 0.14);
-      let active = [];
-
-      if (heroVideo && (visibleVideos.get(heroVideo) || 0) >= 0.12) {
-        active = [heroVideo];
-      } else {
-        const sectionScores = new Map();
-        entries.forEach(([video, ratio]) => {
-          if (video === heroVideo) return;
-          const section = video.closest("[data-parallax-scene]");
-          if (!section) return;
-          const score = (sectionScores.get(section) || 0) + ratio;
-          sectionScores.set(section, score);
-        });
-        const activeSection = Array.from(sectionScores.entries())
-          .sort(([, scoreA], [, scoreB]) => scoreB - scoreA)[0]?.[0];
-        if (activeSection) {
-          const maxSectionVideos = activeSection.classList.contains("scene-world") && !window.matchMedia("(max-width: 900px)").matches ? 2 : 1;
-          active = entries
-            .filter(([video]) => video !== heroVideo && video.closest("[data-parallax-scene]") === activeSection)
-            .sort(([videoA, ratioA], [videoB, ratioB]) => {
-              const scoreA = ratioA + Number(videoA.dataset.videoPriority || 1) * 0.16;
-              const scoreB = ratioB + Number(videoB.dataset.videoPriority || 1) * 0.16;
-              return scoreB - scoreA;
-            })
-            .slice(0, maxSectionVideos)
-            .map(([video]) => video);
-        }
-      }
-
-      videos.forEach((video) => {
-        if (active.includes(video)) {
-          playVideo(video);
-        } else {
-          pauseVideo(video);
-        }
-      });
-    };
-
-    motion.videoWarmObserver = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => {
-        const video = entry.target;
-        if (entry.isIntersecting) {
-          video.preload = "auto";
-          if (video.readyState < 2) {
-            video.load();
-          }
-        }
-      });
-    }, { rootMargin: "700px 0px", threshold: 0.01 });
-
     motion.videoObserver = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
-        const video = entry.target;
-        if (entry.isIntersecting && entry.intersectionRatio >= 0.18) {
-          visibleVideos.set(video, entry.intersectionRatio);
-        } else {
-          visibleVideos.delete(video);
-        }
+        if (entry.isIntersecting && entry.intersectionRatio >= 0.5) playVideo(entry.target);
+        else pauseVideo(entry.target);
       });
-      if (!motion.videoFrame) {
-        motion.videoFrame = requestAnimationFrame(() => {
-          motion.videoFrame = null;
-          updateActiveVideos();
-        });
-      }
-    }, { rootMargin: "120px 0px", threshold: [0, 0.18, 0.4] });
+    }, { rootMargin: "0px", threshold: [0, 0.5] });
 
-    videos.forEach((video) => {
-      motion.videoWarmObserver.observe(video);
-      motion.videoObserver.observe(video);
-    });
-    motion.videoResizeHandler = updateActiveVideos;
-    window.addEventListener("resize", motion.videoResizeHandler, { passive: true });
+    optedInVideos.forEach((video) => motion.videoObserver.observe(video));
   }
 
   function setupManagedModels() {
@@ -2909,9 +3672,35 @@
       motion.modelObserver.disconnect();
       motion.modelObserver = null;
     }
-    if (!models.length || window.matchMedia("(prefers-reduced-motion: reduce)").matches || !("IntersectionObserver" in window)) {
+    if (!models.length) {
       return;
     }
+
+    models.forEach((model) => {
+      if (!model.dataset.src || model.dataset.deferredModelBound === "true") return;
+      model.dataset.deferredModelBound = "true";
+      model.classList.add("is-deferred-model");
+      model.tabIndex = 0;
+      model.setAttribute("role", "button");
+      model.setAttribute("aria-label", `${model.getAttribute("alt") || "3D model"}. Click to load the interactive preview.`);
+      const loadModel = () => {
+        if (!model.dataset.src) return;
+        model.src = model.dataset.src;
+        delete model.dataset.src;
+        model.classList.remove("is-deferred-model");
+        model.removeAttribute("role");
+        model.setAttribute("aria-label", model.getAttribute("alt") || "Interactive 3D model");
+      };
+      model.addEventListener("click", loadModel, { once: true });
+      model.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          loadModel();
+        }
+      });
+    });
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches || !("IntersectionObserver" in window)) return;
 
     const activateModel = (model) => {
       model.autoRotate = model.dataset.autoRotate !== "false";
@@ -5436,6 +6225,11 @@
     return gpSafe(value || "");
   }
 
+  function xgpExcerpt(value, limit = 220) {
+    const compact = String(value || "").replace(/\s+/g, " ").trim();
+    return compact.length > limit ? `${compact.slice(0, Math.max(0, limit - 1)).trimEnd()}…` : compact;
+  }
+
   function xgpProject() {
     const project = currentProject();
     if (!project) return { title: "No active project", genre: "Create a project to begin", design: {}, story: [], characters: [], worlds: [], terrain: [], builds: [], buildJobs: [], deployments: [], analytics: {}, lifecycle: {} };
@@ -5462,13 +6256,13 @@
     `;
   }
 
-  function renderAuthPage() {
+  function renderXboxAuthPage() {
     const isLogin = state.authMode === "login";
     return `
-      <main class="xgp-auth">
+      <main class="xgp-auth" style="position:fixed;inset:72px 0 0;z-index:10000;display:grid;place-items:center;overflow:auto;opacity:1;visibility:visible;background:radial-gradient(circle at 15% 25%,rgba(232,35,153,.45),transparent 35%),radial-gradient(circle at 85% 22%,rgba(52,189,255,.38),transparent 35%),linear-gradient(135deg,#17111e,#111925 55%,#090b12);padding:clamp(18px,4vw,54px);">
         <section class="xgp-auth-glow" aria-hidden="true"></section>
-        <section class="xgp-auth-shell">
-          <div class="xgp-mobile-stack" aria-hidden="true">
+        <section class="xgp-auth-shell" style="position:relative;z-index:10001;display:grid;grid-template-columns:minmax(0,1fr);align-items:center;width:min(620px,100%);opacity:1;visibility:visible;">
+          <div class="xgp-mobile-stack" aria-hidden="true" style="display:none!important;">
             <article class="xgp-phone xgp-phone-left">
               <div class="xgp-phone-top">
                 <span></span>
@@ -5500,8 +6294,8 @@
             </article>
           </div>
 
-          <form class="xgp-auth-card" id="auth-form">
-            <img class="xgp-auth-logo" src="/assets/brand/comic30-icon-trim.png" alt="Comic30" />
+          <form class="xgp-auth-card" id="auth-form" data-form="auth" style="position:relative;z-index:10002;display:block;width:100%;opacity:1;visibility:visible;">
+            <img class="xgp-auth-logo" src="/assets/brand/comic30-icon-trim.png" alt="Comic30" style="display:none!important;" />
             <div class="xgp-auth-tabs">
               <button type="button" class="${isLogin ? "" : "is-active"}" data-auth-mode="register">Create account</button>
               <button type="button" class="${isLogin ? "is-active" : ""}" data-auth-mode="login">Sign in</button>
@@ -5708,7 +6502,7 @@
     `;
   }
 
-  function renderPortal() {
+  function renderXboxPortal() {
     const project = xgpProject();
     const view = ["overview", "agent", "studio", "pipeline", "wallet"].includes(state.view) ? state.view : "overview";
     const nav = [
@@ -5743,10 +6537,9 @@
           </aside>
           <section class="xgp-screen">
             <header class="xgp-topbar">
-              <button type="button" class="xgp-back" data-view="overview" aria-label="Back">‹</button>
               <label class="xgp-search">
-                <span>⌕</span>
-                <input placeholder="Search projects, builds, rigs, and people" />
+                <span aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg></span>
+                <input type="search" aria-label="Search portal" placeholder="Search projects, builds, rigs, and people" />
               </label>
               <div class="xgp-controls" aria-hidden="true"><span></span><span></span><span></span></div>
             </header>
@@ -5757,6 +6550,89 @@
       </main>
     `;
   }
+
+  // Keep the Xbox/mobile presentation active while the persisted application
+  // handlers power Builder, Studio, Pipeline, Wallet, and exports.
+  function renderAuthPage() {
+    return renderXboxAuthPage();
+  }
+
+  function renderPortal() {
+    return renderXboxPortal();
+  }
+
+  function renderAccountActions() {
+    if (!accountActions) return;
+    if (state.user) {
+      accountActions.innerHTML = `
+        <span class="muted">Hi, ${escapeHtml(state.user.name.split(" ")[0])}</span>
+        <button class="secondary-button" type="button" data-logout>Sign out</button>
+      `;
+      return;
+    }
+    accountActions.innerHTML = `
+      <button class="primary-button portal-start-button" type="button" data-screen="auth" data-auth-mode="login">Start</button>
+    `;
+  }
+
+  function render() {
+    try {
+      renderAccountActions();
+      document.body.classList.toggle("home-surface", !state.user && state.screen === "home");
+      document.body.classList.toggle("auth-surface", !state.user && state.screen === "auth");
+      document.body.classList.toggle("portal-surface", Boolean(state.user));
+      ["game-auth-body", "game-portal-body", "gp-auth-body", "gp-portal-body"].forEach((className) => {
+        document.body.classList.remove(className);
+      });
+      if (!state.user && state.screen === "auth") {
+        app.innerHTML = renderXboxAuthPage();
+        activateMotion();
+        return;
+      }
+      if (!state.user) {
+        app.innerHTML = renderHome();
+        activateMotion();
+        return;
+      }
+      app.innerHTML = renderXboxPortal();
+      activateMotion();
+      initGameplayPreviews();
+    } catch (error) {
+      console.error("Comic30 render failed", error);
+      document.body.classList.add("auth-surface");
+      app.innerHTML = `<section class="comic30-render-error"><img src="/assets/brand/comic30-icon.png" alt=""><h1>Comic30 could not finish loading.</h1><p>${escapeHtml(error?.message || "Unknown frontend error")}</p><button type="button" onclick="window.location.reload()">Reload Comic30</button></section>`;
+    }
+  }
+
+  document.addEventListener("input", (event) => {
+    const searchInput = event.target.closest(".xgp-search input");
+    if (!searchInput) return;
+    const query = searchInput.value.trim().toLowerCase();
+    const portal = searchInput.closest(".xgp-portal");
+    if (!portal) return;
+    portal.querySelectorAll(".xgp-library-item, .xgp-project-row, .xgp-hero-card, .xgp-feature-card, .xgp-step-grid article").forEach((item) => {
+      item.hidden = Boolean(query) && !item.textContent.toLowerCase().includes(query);
+    });
+  });
+
+  document.addEventListener("change", (event) => {
+    const fileInput = event.target.closest('.xgp-asset-uploader input[type="file"]');
+    if (!fileInput) return;
+    const output = fileInput.closest("form")?.querySelector(".xgp-upload-selection");
+    if (!output) return;
+    const files = Array.from(fileInput.files || []);
+    output.textContent = files.length
+      ? `${files.length} file${files.length === 1 ? "" : "s"} selected · ${formatAssetBytes(files.reduce((total, file) => total + file.size, 0))}`
+      : "No files selected";
+  });
+
+  document.addEventListener("keydown", (event) => {
+    const searchInput = event.target.closest(".xgp-search input");
+    if (!searchInput || event.key !== "Escape") return;
+    searchInput.value = "";
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    searchInput.blur();
+  });
 
   render();
 })();
